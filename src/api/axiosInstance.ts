@@ -37,7 +37,10 @@ export const clearTokens = (): void => {
 };
 
 // ── Normalize baseURL ─────────────────────────────────────────
-const rawApiBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
+const rawApiBase = (
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.PROD ? 'https://gshe.blitz.cloud' : '')
+).trim();
 const normalizedBaseUrl = rawApiBase.endsWith('/api')
   ? rawApiBase.slice(0, -4)
   : rawApiBase.endsWith('/')

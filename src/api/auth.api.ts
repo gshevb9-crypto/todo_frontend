@@ -19,7 +19,10 @@ export const verifyCode = async (email: string, code: string): Promise<TokenResp
 };
 
 export const getGoogleLoginUrl = (returnUrl: string): string => {
-  const rawBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
+  const rawBase = (
+    import.meta.env.VITE_API_BASE_URL ||
+    (import.meta.env.PROD ? 'https://gshe.blitz.cloud' : '')
+  ).trim();
   const normalizedBase = rawBase.endsWith('/') ? rawBase.slice(0, -1) : rawBase;
   const apiPrefix = normalizedBase.endsWith('/api') ? normalizedBase : `${normalizedBase}/api`;
   return `${apiPrefix}/Auth/google-login?returnUrl=${encodeURIComponent(returnUrl)}`;
