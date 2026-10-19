@@ -88,8 +88,6 @@ export async function checkBackendStartup(signal?: AbortSignal): Promise<Readine
       cache: 'no-store',
       headers: {
         Accept: 'application/json',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        Pragma: 'no-cache',
       },
     });
 
