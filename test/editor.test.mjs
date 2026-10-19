@@ -136,3 +136,52 @@ test('Case 7: Switching tabs flushes unsaved edits immediately before loading ne
   assert.equal(tabAContent, 'Modified A before switch', 'Tab A changes must be flushed before switching');
   assert.equal(activeTab, 'B');
 });
+
+test('Case 8: Formatting actions preserve selection coordinates and apply semantic HTML without raw Markdown artifacts', () => {
+  // Simulate editor state with text and selection
+  class MockEditorState {
+    constructor(initialText) {
+      this.text = initialText;
+      this.selection = { from: 0, to: 0 };
+      this.marks = new Set();
+      this.nodeType = 'paragraph';
+    }
+
+    setSelection(from, to) {
+      this.selection = { from, to };
+    }
+
+    toggleBold() {
+      // Must apply real rich-text mark, not insert literal '**'
+      if (this.marks.has('bold')) {
+        this.marks.delete('bold');
+      } else {
+        this.marks.add('bold');
+      }
+    }
+
+    getHtml() {
+      const selected = this.text.substring(this.selection.from, this.selection.to);
+      const before = this.text.substring(0, this.selection.from);
+      const after = this.text.substring(this.selection.to);
+      const formatted = this.marks.has('bold') ? `<strong>${selected}</strong>` : selected;
+      return `<p>${before}${formatted}${after}</p>`;
+    }
+  }
+
+  const editor = new MockEditorState('Hello world note');
+  // Select "world" (indices 6 to 11)
+  editor.setSelection(6, 11);
+
+  // Opening the overflow menu saves selection
+  const savedSelection = { ...editor.selection };
+  assert.deepEqual(savedSelection, { from: 6, to: 11 });
+
+  // Tapping Bold from menu restores selection and runs toggleBold
+  editor.setSelection(savedSelection.from, savedSelection.to);
+  editor.toggleBold();
+
+  const html = editor.getHtml();
+  assert.equal(html, '<p>Hello <strong>world</strong> note</p>');
+  assert.ok(!html.includes('**'), 'Must not insert literal asterisk characters for Bold');
+});

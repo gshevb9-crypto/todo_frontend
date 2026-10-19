@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { checkBackendStartup, ReadinessProbeResult } from '../api/startup.api';
+import { checkBackendStartup, ReadinessProbeResult, BACKEND_ROOT_URL } from '../api/startup.api';
 
 export interface BackendReadinessContextValue {
   isReady: boolean;
@@ -11,12 +11,12 @@ export interface BackendReadinessContextValue {
 
 const BackendReadinessContext = createContext<BackendReadinessContextValue | null>(null);
 
-// Default prolonged startup threshold: 90 seconds (within 90-120 seconds range)
+// Default prolonged startup threshold: 90 seconds (within the 90-120 seconds range)
 const DEFAULT_PROLONGED_THRESHOLD_MS = 90_000;
-// Normal retry interval: 2 seconds after the previous request completes
-const NORMAL_RETRY_INTERVAL_MS = 2_000;
-// Safe prolonged retry interval: backs off to 6 seconds to avoid aggressive polling indefinitely
-const PROLONGED_RETRY_INTERVAL_MS = 6_000;
+// Normal retry interval: 2.5 seconds (within the 2-3 seconds range) after previous probe completes
+const NORMAL_RETRY_INTERVAL_MS = 2_500;
+// Prolonged retry interval: backs off to 5 seconds to reduce traffic while remaining responsive
+const PROLONGED_RETRY_INTERVAL_MS = 5_000;
 
 interface BackendReadinessProviderProps {
   children: React.ReactNode;
@@ -42,13 +42,13 @@ export function BackendReadinessProvider({
   const attemptCountRef = useRef(0);
   const hasLoggedProlongedRef = useRef(false);
 
-  // Keep isReadyRef in sync
+  // Keep isReadyRef in sync with state
   useEffect(() => {
     isReadyRef.current = isReady;
   }, [isReady]);
 
   const runProbe = useCallback(async () => {
-    // If already ready, unmounted, or a probe is currently in flight, do nothing
+    // If already confirmed ready, unmounted, or a probe is currently in flight, do nothing
     if (isReadyRef.current || !isMountedRef.current || inFlightRef.current) {
       return;
     }
@@ -58,20 +58,19 @@ export function BackendReadinessProvider({
     attemptCountRef.current += 1;
     const attempt = attemptCountRef.current;
 
-    // 1. Log: Backend wake-up check initiated
-    console.log(`[StartupReadiness] Check #${attempt} initiated to /api/system/wake-up`);
+    // Log initiation to the backend's root URL
+    console.log(`[StartupReadiness] Check #${attempt} initiated to backend root (${BACKEND_ROOT_URL})`);
 
     // Check if the prolonged threshold has passed
     const elapsed = Date.now() - overallStartTimeRef.current;
     if (elapsed >= prolongedThresholdMs) {
       setIsProlonged(true);
-      // Log: Transition to the prolonged-startup error state
       if (!hasLoggedProlongedRef.current) {
         hasLoggedProlongedRef.current = true;
         console.warn(
-          `[StartupReadiness] Transition to prolonged-startup error state: backend startup has taken ${Math.round(
+          `[StartupReadiness] Backend startup has taken ${Math.round(
             elapsed / 1000
-          )}s (threshold: ${prolongedThresholdMs / 1000}s). Displaying user-friendly Arabic alert and manual Retry button.`
+          )}s (threshold: ${prolongedThresholdMs / 1000}s). Showing prolonged alert and manual retry.`
         );
       }
     }
@@ -86,7 +85,7 @@ export function BackendReadinessProvider({
       probeResult = await checkBackendStartup(abortController.signal);
     } catch (err: any) {
       // Aborted probe due to unmount or manual retry
-      if (err?.name === 'CanceledError' || abortController.signal.aborted) {
+      if (err?.name === 'AbortError' || err?.name === 'CanceledError' || abortController.signal.aborted) {
         inFlightRef.current = false;
         setIsChecking(false);
         return;
@@ -107,12 +106,11 @@ export function BackendReadinessProvider({
     const isConfirmedReady = probeResult?.isReady === true;
 
     if (isConfirmedReady) {
-      // 2. Log: Successful readiness confirmation and total time until ready
       const totalTimeMs = Date.now() - overallStartTimeRef.current;
       console.log(
         `[StartupReadiness] Check #${attempt} succeeded in ${probeResult?.durationMs}ms (HTTP ${
           probeResult?.status ?? 200
-        }). Backend confirmed awake with { status: "ready", value: "Gaber" }.`
+        }). Backend confirmed online and healthy (status: "Healthy", availability: "online").`
       );
       console.log(
         `[StartupReadiness] Successful wake-up confirmation! Total time until backend ready: ${totalTimeMs}ms (${attempt} attempt(s)). Stopping polling permanently.`
@@ -127,18 +125,16 @@ export function BackendReadinessProvider({
       return;
     }
 
-    // 3. Log: HTTP status or network/timeout failure with attempt number and request duration
+    // Probe did not confirm readiness: log and schedule next attempt
     console.warn(
-      `[StartupReadiness] Check #${attempt} failed after ${probeResult?.durationMs ?? 0}ms. Status: HTTP ${
+      `[StartupReadiness] Check #${attempt} not ready after ${probeResult?.durationMs ?? 0}ms. Status: HTTP ${
         probeResult?.status ?? 'N/A'
       }, Error: ${probeResult?.errorMessage || 'Not ready'}. Scheduling retry.`
     );
 
-    // Backend is not yet ready. Increment retry count and schedule next attempt.
     setRetryCount((prev) => prev + 1);
 
-    // Safe retry policy:
-    // 2 seconds during normal startup; backs off to 6 seconds if prolonged, avoiding aggressive indefinite polling.
+    // Dynamic retry interval: 2.5s normal, 5s during prolonged state
     const isNowProlonged = Date.now() - overallStartTimeRef.current >= prolongedThresholdMs;
     const intervalMs = isNowProlonged ? PROLONGED_RETRY_INTERVAL_MS : NORMAL_RETRY_INTERVAL_MS;
 
@@ -148,23 +144,20 @@ export function BackendReadinessProvider({
   }, [prolongedThresholdMs]);
 
   const retryNow = useCallback(() => {
-    // If already ready, do nothing
     if (isReadyRef.current) return;
 
     console.log('[StartupReadiness] Manual retry triggered by user.');
 
-    // Clear any pending timer
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
 
-    // If a request is currently hanging, abort it and start fresh
+    // If a probe is currently hanging, abort it and start fresh
     if (inFlightRef.current && abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
 
-    // Run probe immediately
     runProbe();
   }, [runProbe]);
 
@@ -175,7 +168,6 @@ export function BackendReadinessProvider({
     attemptCountRef.current = 0;
     hasLoggedProlongedRef.current = false;
 
-    // Start initial probe
     runProbe();
 
     return () => {

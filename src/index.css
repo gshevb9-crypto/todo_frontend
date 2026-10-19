@@ -196,16 +196,27 @@ input:focus, textarea:focus {
   display: none;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  font-size: 1.1rem;
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 0;
 }
 
 .btn-sidebar-close:hover {
   background-color: var(--bg-hover);
   color: var(--text-primary);
+  border-color: var(--accent-blue);
+}
+
+.btn-sidebar-close:active {
+  transform: scale(0.95);
 }
 
 .btn-new-tab {
@@ -628,6 +639,143 @@ input:focus, textarea:focus {
   height: 18px;
   background: var(--border-color);
   margin: 0 0.25rem;
+}
+
+/* ── Toolbar Three-Dot Overflow Menu ────────────────────────── */
+.toolbar-overflow-container {
+  position: relative;
+  display: none;
+}
+
+.toolbar-overflow-trigger {
+  min-width: 36px;
+  height: 32px;
+  padding: 0.2rem 0.45rem;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.toolbar-overflow-trigger:hover,
+.toolbar-overflow-trigger.active {
+  background-color: var(--bg-hover);
+  color: var(--accent-blue);
+  border-color: var(--accent-glow);
+}
+
+.toolbar-overflow-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1000;
+  min-width: 240px;
+  max-width: min(320px, calc(100vw - 2rem));
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background-color: var(--bg-surface-elevated);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  animation: overflowMenuFadeIn 0.15s ease-out;
+}
+
+@keyframes overflowMenuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.overflow-section-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  padding: 0.35rem 0.5rem 0.2rem 0.5rem;
+  user-select: none;
+}
+
+.overflow-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem;
+}
+
+.overflow-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  transition: all 0.15s ease;
+  min-height: 36px;
+}
+
+.overflow-menu-item:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.overflow-menu-item.active {
+  background-color: var(--bg-active);
+  color: var(--accent-blue);
+  font-weight: 600;
+  border-color: var(--accent-glow);
+}
+
+.overflow-menu-item.clear-action {
+  color: var(--text-muted);
+  justify-content: center;
+  border: 1px dashed var(--border-color);
+  margin-top: 0.25rem;
+}
+
+.overflow-menu-item.clear-action:hover {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background-color: var(--danger-bg);
+}
+
+.overflow-item-icon {
+  font-size: 0.95rem;
+  font-family: var(--font-mono);
+  width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.overflow-menu-divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 0.35rem 0;
+  flex-shrink: 0;
 }
 
 .editor-viewport {
@@ -1308,7 +1456,7 @@ input:focus, textarea:focus {
   }
 
   .btn-sidebar-close {
-    display: inline-flex;
+    display: flex;
   }
 
   .sidebar {
@@ -1316,16 +1464,43 @@ input:focus, textarea:focus {
     top: 0;
     left: 0;
     bottom: 0;
-    width: 290px;
-    max-width: 85vw;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
+    width: 300px;
+    max-width: 86vw;
     z-index: 1000;
     transform: translateX(-100%);
+    visibility: hidden;
+    pointer-events: none;
     box-shadow: none;
+    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.28s;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    display: flex;
+    flex-direction: column;
   }
 
   .sidebar.open {
     transform: translateX(0);
-    box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+    visibility: visible;
+    pointer-events: auto;
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.85);
+  }
+
+  .sidebar-backdrop {
+    visibility: hidden;
+  }
+
+  .sidebar-backdrop.visible {
+    visibility: visible;
+  }
+
+  .sidebar-tabs-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .tab-actions {
@@ -1373,6 +1548,7 @@ input:focus, textarea:focus {
   .workspace-actions {
     width: 100%;
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
     gap: 0.4rem;
@@ -1394,24 +1570,38 @@ input:focus, textarea:focus {
     padding: 0.75rem 0.85rem;
   }
 
+  /* Responsive Toolbar on Mobile */
+  .toolbar-desktop-only {
+    display: none !important;
+  }
+
+  .toolbar-overflow-container {
+    display: inline-flex;
+    margin-left: auto;
+  }
+
   .toolbar {
-    padding: 0.35rem 0.45rem;
-    gap: 0.2rem;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    padding: 0.35rem 0.5rem;
+    gap: 0.35rem;
+    overflow: visible;
+    position: relative;
   }
 
   .toolbar-group {
-    gap: 0.15rem;
+    gap: 0.2rem;
   }
 
   .toolbar-btn {
-    min-width: 28px;
-    height: 28px;
-    padding: 0.2rem 0.35rem;
-    font-size: 0.78rem;
+    min-width: 34px;
+    height: 34px;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.85rem;
   }
 
   .toolbar-divider {
-    height: 14px;
+    height: 16px;
     margin: 0 0.15rem;
   }
 
@@ -1481,6 +1671,15 @@ input:focus, textarea:focus {
 
   .editor-container {
     padding: 0.5rem 0.65rem;
+  }
+
+  .overflow-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar-overflow-menu {
+    min-width: 200px;
+    max-width: calc(100vw - 1.5rem);
   }
 
   .prose-editor-content {

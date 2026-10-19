@@ -201,16 +201,17 @@ export default function NotesPage() {
   }, []);
 
   // ── Switch Tab Safely ─────────────────────────────────────────
-  const handleSelectTab = async (newTabId: string) => {
+  const handleSelectTab = (newTabId: string) => {
+    // 1. Immediately dismiss mobile drawer synchronously so note editor is revealed
+    setSidebarOpen(false);
+
     if (newTabId === activeTabId) {
-      // Close mobile drawer if open
-      setSidebarOpen(false);
       return;
     }
 
-    // Flush any pending unsaved changes from previous tab first
+    // 2. Flush any pending unsaved changes from previous tab in background
     if (activeTabId && pendingContentRef.current !== lastSavedContentRef.current) {
-      await flushSave(activeTabId, pendingContentRef.current);
+      flushSave(activeTabId, pendingContentRef.current);
     }
 
     if (saveTimeoutRef.current) {
@@ -219,7 +220,6 @@ export default function NotesPage() {
     }
 
     setActiveTabId(newTabId);
-    setSidebarOpen(false);
   };
 
   useEffect(() => {
@@ -396,14 +396,31 @@ export default function NotesPage() {
             <span className="brand-icon">📓</span>
             <span className="brand-title">Workspace</span>
           </div>
-          {/* Close button inside drawer for mobile */}
+          {/* Prominent, accessible close button inside drawer for mobile */}
           <button
             type="button"
             className="btn-sidebar-close"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Close navigation"
+            onClick={(e) => {
+              e.stopPropagation();
+              setSidebarOpen(false);
+            }}
+            aria-label="Close navigation panel"
+            title="Close navigation"
           >
-            ✕
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
           </button>
         </div>
 
@@ -427,6 +444,12 @@ export default function NotesPage() {
                 onClick={() => handleSelectTab(tab.id)}
                 role="button"
                 tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSelectTab(tab.id);
+                  }
+                }}
               >
                 <div className="tab-info">
                   <span className="tab-icon">{tab.icon || '📝'}</span>

@@ -2,33 +2,41 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 /**
- * Direct unit test suite for the Backend Static Wake-Up polling engine (/api/system/wake-up).
- * Validates all required wake-up contract behaviors:
- * 1. Backend already awake -> returns exact { status: "ready", value: "Gaber" }, proceeds to ready on first check and stops polling.
+ * Direct unit test suite for the Backend Root URL Startup & Readiness engine (GET https://gshe.blitz.cloud/).
+ * Validates all required startup contract behaviors:
+ * 1. Backend already awake -> returns exact { status: "Healthy", availability: "online", database: "Connected" }, proceeds to ready on first check and stops polling.
  * 2. Backend is sleeping -> network failure / timeout -> retries safely without crashing and maintains loading state.
- * 3. Wake-up returns HTTP 503 Service Unavailable -> treated as transient and retries.
- * 4. Wake-up request times out -> recovers by retrying without creating overlapping requests.
- * 5. Unexpected response -> does NOT incorrectly mark the backend ready; continues retrying.
+ * 3. Root returns HTTP 503 Service Unavailable -> treated as transient and retries.
+ * 4. Root request times out -> recovers by retrying without creating overlapping requests.
+ * 5. Unexpected / Non-JSON response (e.g. HTML gateway error or missing fields) -> does NOT incorrectly mark the backend ready; continues retrying.
  * 6. Backend becomes ready after several retries -> transitions to ready and stops polling permanently.
  * 7. Backend remains unavailable -> enters prolonged state, backs off retry rate, and supports manual retryNow.
  * 8. Strict non-overlapping enforcement under concurrent triggers.
  * 9. Re-render and navigation isolation -> once ready, no additional probes occur.
+ * 10. Validates exact availability: "online" and status: "Healthy" requirements.
  */
 
-// Evaluation of static wake-up endpoint contract (GET /api/system/wake-up)
-function evaluateWakeUpResponse(response) {
+// Evaluation of the actual public root response contract (GET https://gshe.blitz.cloud/)
+function evaluateRootResponse(response) {
   if (!response || typeof response.status !== 'number') return false;
   if (response.status < 200 || response.status >= 300) return false;
 
   const body = response.data;
-  const isStatusReady =
-    typeof body?.status === 'string' &&
-    body.status.trim().toLowerCase() === 'ready';
-  const isValueGaber =
-    typeof body?.value === 'string' &&
-    body.value.trim() === 'Gaber';
+  if (!body || typeof body !== 'object') return false;
 
-  return Boolean(isStatusReady && isValueGaber);
+  const isStatusHealthy =
+    typeof body.status === 'string' &&
+    body.status.trim().toLowerCase() === 'healthy';
+
+  const isAvailabilityOnline =
+    typeof body.availability === 'string' &&
+    body.availability.trim().toLowerCase() === 'online';
+
+  const isDatabaseReady =
+    body.database === undefined ||
+    (typeof body.database === 'string' && body.database.trim().toLowerCase() === 'connected');
+
+  return Boolean(isStatusHealthy && isAvailabilityOnline && isDatabaseReady);
 }
 
 // Simulation of the polling coordinator used in BackendReadinessContext
@@ -125,15 +133,19 @@ class PollingCoordinator {
 
 // ── Test Cases ─────────────────────────────────────────────────────────────
 
-test('Case 1: Backend is already awake -> returns exact { status: "ready", value: "Gaber" } and stops polling', async () => {
+test('Case 1: Backend is already awake -> returns exact { status: "Healthy", availability: "online" } and stops polling', async () => {
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    return evaluateWakeUpResponse({
+    return evaluateRootResponse({
       status: 200,
       data: {
-        status: 'ready',
-        value: 'Gaber',
+        status: 'Healthy',
+        availability: 'online',
+        service: 'ToDo & Notes API',
+        database: 'Connected',
+        pendingMigrations: 0,
+        details: null,
       },
     });
   };
@@ -170,11 +182,11 @@ test('Case 2: Backend is sleeping -> retries safely without crashing and maintai
   assert.ok(callCount >= 2);
 });
 
-test('Case 3: Wake-up returns HTTP 503 Service Unavailable -> treated as transient and retries', async () => {
+test('Case 3: Root returns HTTP 503 Service Unavailable -> treated as transient and retries', async () => {
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    return evaluateWakeUpResponse({
+    return evaluateRootResponse({
       status: 503,
       data: { error: 'Service Unavailable' },
     });
@@ -190,7 +202,7 @@ test('Case 3: Wake-up returns HTTP 503 Service Unavailable -> treated as transie
   assert.ok(coordinator.retryCount >= 2);
 });
 
-test('Case 4: Wake-up request times out -> recovers by retrying without creating overlapping requests', async () => {
+test('Case 4: Root request times out -> recovers by retrying without creating overlapping requests', async () => {
   let inFlightNow = 0;
   let maxConcurrent = 0;
   let callCount = 0;
@@ -221,27 +233,28 @@ test('Case 4: Wake-up request times out -> recovers by retrying without creating
   assert.equal(coordinator.maxConcurrentRequests, 1);
 });
 
-test('Case 5: Unexpected response (wrong status or wrong value) -> does NOT incorrectly mark backend ready', async () => {
+test('Case 5: Unexpected response (missing availability or wrong status) -> does NOT incorrectly mark backend ready', async () => {
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    // E.g. proxy returned HTML error or different JSON
     if (callCount === 1) {
-      return evaluateWakeUpResponse({
+      // Missing availability
+      return evaluateRootResponse({
         status: 200,
-        data: { status: 'starting', value: 'Gaber' }, // wrong status
+        data: { status: 'Healthy', database: 'Connected' },
       });
     }
     if (callCount === 2) {
-      return evaluateWakeUpResponse({
+      // availability is offline / degraded
+      return evaluateRootResponse({
         status: 200,
-        data: { status: 'ready', value: 'Unknown' }, // wrong value
+        data: { status: 'Degraded', availability: 'offline', database: 'Disconnected' },
       });
     }
-    // Third attempt returns exact match
-    return evaluateWakeUpResponse({
+    // Third attempt returns genuine ready response
+    return evaluateRootResponse({
       status: 200,
-      data: { status: 'ready', value: 'Gaber' },
+      data: { status: 'Healthy', availability: 'online', database: 'Connected' },
     });
   };
 
@@ -259,11 +272,11 @@ test('Case 6: Backend becomes ready after several retries -> transitions to read
   const probeFn = async () => {
     attempts++;
     if (attempts < 3) {
-      return evaluateWakeUpResponse({ status: 503 });
+      return evaluateRootResponse({ status: 503 });
     }
-    return evaluateWakeUpResponse({
+    return evaluateRootResponse({
       status: 200,
-      data: { status: 'ready', value: 'Gaber' },
+      data: { status: 'Healthy', availability: 'online', database: 'Connected' },
     });
   };
 
@@ -333,16 +346,16 @@ test('Case 8: Strict non-overlapping enforcement under concurrent triggers', asy
   await new Promise((r) => setTimeout(r, 80));
   coordinator.stop();
 
-  assert.equal(maxObserved, 1, 'Never allow overlapping wake-up requests');
+  assert.equal(maxObserved, 1, 'Never allow overlapping requests');
 });
 
 test('Case 9: Re-render and navigation isolation -> once ready, no additional polling occurs', async () => {
   let probeCount = 0;
   const probeFn = async () => {
     probeCount++;
-    return evaluateWakeUpResponse({
+    return evaluateRootResponse({
       status: 200,
-      data: { status: 'ready', value: 'Gaber' },
+      data: { status: 'Healthy', availability: 'online', database: 'Connected' },
     });
   };
 
