@@ -1,17 +1,8 @@
 import axiosInstance from './axiosInstance';
 
-export interface StartupStatusData {
+export interface WakeUpResponse {
   status: string;
-  service?: string;
-  database: string;
-  timestamp?: string;
-}
-
-export interface StartupApiResponse {
-  success: boolean;
-  message?: string;
-  data?: StartupStatusData | null;
-  errors?: Record<string, string[]>;
+  value: string;
 }
 
 export interface ReadinessProbeResult {
@@ -19,20 +10,20 @@ export interface ReadinessProbeResult {
   durationMs: number;
   status?: number;
   errorMessage?: string;
-  data?: StartupStatusData | null;
+  data?: WakeUpResponse | null;
 }
 
 /**
- * Sends a GET request to the real backend startup readiness endpoint (/api/system/startup).
+ * Sends a GET request to the dedicated static wake-up endpoint (/api/system/wake-up).
  * Uses a bounded timeout of 10 seconds per probe.
  * Does not throw on HTTP/network errors; returns a structured ReadinessProbeResult
- * indicating whether the backend and its database dependency are confirmed ready.
+ * indicating whether the backend has awakened and returned { status: "ready", value: "Gaber" }.
  */
 export async function checkBackendStartup(signal?: AbortSignal): Promise<ReadinessProbeResult> {
   const startTime = performance.now();
 
   try {
-    const response = await axiosInstance.get<StartupApiResponse>('/api/system/startup', {
+    const response = await axiosInstance.get<WakeUpResponse>('/api/system/wake-up', {
       timeout: 10_000,
       signal,
       headers: {
@@ -45,21 +36,21 @@ export async function checkBackendStartup(signal?: AbortSignal): Promise<Readine
 
     if (response.status >= 200 && response.status < 300) {
       const body = response.data;
-      const isSuccess = body?.success === true;
       const isStatusReady =
-        typeof body?.data?.status === 'string' &&
-        body.data.status.trim().toLowerCase() === 'ready';
-      const isDatabaseReady =
-        typeof body?.data?.database === 'string' &&
-        body.data.database.trim().toLowerCase() === 'ready';
+        typeof body?.status === 'string' &&
+        body.status.trim().toLowerCase() === 'ready';
+      const isValueGaber =
+        typeof body?.value === 'string' &&
+        body.value.trim() === 'Gaber';
 
-      const isReady = isSuccess && isStatusReady && isDatabaseReady;
+      const isReady = isStatusReady && isValueGaber;
 
       return {
         isReady,
         durationMs,
         status: response.status,
-        data: body?.data ?? null,
+        data: body ?? null,
+        errorMessage: isReady ? undefined : 'Response did not match expected { status: "ready", value: "Gaber" }',
       };
     }
 

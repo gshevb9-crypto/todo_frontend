@@ -2,33 +2,33 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 /**
- * Direct unit test suite for the Backend Real Startup & Readiness polling engine.
- * Validates all required startup readiness contract behaviors:
- * 1. Backend already awake -> proceeds to ready on first check and stops polling.
- * 2. Backend is sleeping -> retries safely without crashing and maintains loading state.
- * 3. Startup returns HTTP 503 Service Unavailable -> treated as transient and retries.
- * 4. Startup request times out -> recovers by retrying without creating overlapping requests.
- * 5. Backend becomes ready after several retries -> transitions to ready and stops polling permanently.
- * 6. Backend remains unavailable -> enters prolonged state, backs off retry rate, and supports manual retryNow.
- * 7. Strict non-overlapping enforcement under concurrent triggers.
- * 8. Re-render and navigation isolation -> once ready, no additional probes occur.
+ * Direct unit test suite for the Backend Static Wake-Up polling engine (/api/system/wake-up).
+ * Validates all required wake-up contract behaviors:
+ * 1. Backend already awake -> returns exact { status: "ready", value: "Gaber" }, proceeds to ready on first check and stops polling.
+ * 2. Backend is sleeping -> network failure / timeout -> retries safely without crashing and maintains loading state.
+ * 3. Wake-up returns HTTP 503 Service Unavailable -> treated as transient and retries.
+ * 4. Wake-up request times out -> recovers by retrying without creating overlapping requests.
+ * 5. Unexpected response -> does NOT incorrectly mark the backend ready; continues retrying.
+ * 6. Backend becomes ready after several retries -> transitions to ready and stops polling permanently.
+ * 7. Backend remains unavailable -> enters prolonged state, backs off retry rate, and supports manual retryNow.
+ * 8. Strict non-overlapping enforcement under concurrent triggers.
+ * 9. Re-render and navigation isolation -> once ready, no additional probes occur.
  */
 
-// Simulation of startup readiness endpoint contract logic (GET /api/system/startup)
-function evaluateStartupResponse(response) {
+// Evaluation of static wake-up endpoint contract (GET /api/system/wake-up)
+function evaluateWakeUpResponse(response) {
   if (!response || typeof response.status !== 'number') return false;
   if (response.status < 200 || response.status >= 300) return false;
 
   const body = response.data;
-  const isSuccess = body?.success === true;
   const isStatusReady =
-    typeof body?.data?.status === 'string' &&
-    body.data.status.trim().toLowerCase() === 'ready';
-  const isDatabaseReady =
-    typeof body?.data?.database === 'string' &&
-    body.data.database.trim().toLowerCase() === 'ready';
+    typeof body?.status === 'string' &&
+    body.status.trim().toLowerCase() === 'ready';
+  const isValueGaber =
+    typeof body?.value === 'string' &&
+    body.value.trim() === 'Gaber';
 
-  return Boolean(isSuccess && isStatusReady && isDatabaseReady);
+  return Boolean(isStatusReady && isValueGaber);
 }
 
 // Simulation of the polling coordinator used in BackendReadinessContext
@@ -125,21 +125,15 @@ class PollingCoordinator {
 
 // ── Test Cases ─────────────────────────────────────────────────────────────
 
-test('Case 1: Backend is already awake -> proceeds to ready on first check and stops polling', async () => {
+test('Case 1: Backend is already awake -> returns exact { status: "ready", value: "Gaber" } and stops polling', async () => {
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    return evaluateStartupResponse({
+    return evaluateWakeUpResponse({
       status: 200,
       data: {
-        success: true,
-        message: 'Backend application and database dependency are ready.',
-        data: {
-          status: 'Ready',
-          service: 'ToDo & Notes API',
-          database: 'Ready',
-          timestamp: new Date().toISOString(),
-        },
+        status: 'ready',
+        value: 'Gaber',
       },
     });
   };
@@ -161,7 +155,7 @@ test('Case 2: Backend is sleeping -> retries safely without crashing and maintai
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    // Simulate network error (sleeping container / cold-start gateway)
+    // Simulate network error (sleeping container / gateway wake delay)
     throw new Error('ECONNREFUSED: Connection refused');
   };
 
@@ -176,18 +170,13 @@ test('Case 2: Backend is sleeping -> retries safely without crashing and maintai
   assert.ok(callCount >= 2);
 });
 
-test('Case 3: Startup readiness returns HTTP 503 Service Unavailable -> treated as transient and retries', async () => {
+test('Case 3: Wake-up returns HTTP 503 Service Unavailable -> treated as transient and retries', async () => {
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    // HTTP 503 from backend while DB connection is not ready yet
-    return evaluateStartupResponse({
+    return evaluateWakeUpResponse({
       status: 503,
-      data: {
-        success: false,
-        message: 'Backend service or database dependency is not ready.',
-        data: null,
-      },
+      data: { error: 'Service Unavailable' },
     });
   };
 
@@ -201,7 +190,7 @@ test('Case 3: Startup readiness returns HTTP 503 Service Unavailable -> treated 
   assert.ok(coordinator.retryCount >= 2);
 });
 
-test('Case 4: Startup request times out -> recovers by retrying without creating overlapping requests', async () => {
+test('Case 4: Wake-up request times out -> recovers by retrying without creating overlapping requests', async () => {
   let inFlightNow = 0;
   let maxConcurrent = 0;
   let callCount = 0;
@@ -232,31 +221,55 @@ test('Case 4: Startup request times out -> recovers by retrying without creating
   assert.equal(coordinator.maxConcurrentRequests, 1);
 });
 
-test('Case 5: Backend becomes ready after several retries -> transitions to ready and stops polling completely', async () => {
-  let attempts = 0;
+test('Case 5: Unexpected response (wrong status or wrong value) -> does NOT incorrectly mark backend ready', async () => {
+  let callCount = 0;
   const probeFn = async () => {
-    attempts++;
-    if (attempts < 3) {
-      // First two attempts fail with 503 (database waking)
-      return evaluateStartupResponse({
-        status: 503,
-        data: { success: false, message: 'Database dependency not ready' },
+    callCount++;
+    // E.g. proxy returned HTML error or different JSON
+    if (callCount === 1) {
+      return evaluateWakeUpResponse({
+        status: 200,
+        data: { status: 'starting', value: 'Gaber' }, // wrong status
       });
     }
-    // Third attempt succeeds
-    return evaluateStartupResponse({
+    if (callCount === 2) {
+      return evaluateWakeUpResponse({
+        status: 200,
+        data: { status: 'ready', value: 'Unknown' }, // wrong value
+      });
+    }
+    // Third attempt returns exact match
+    return evaluateWakeUpResponse({
       status: 200,
-      data: {
-        success: true,
-        data: { status: 'Ready', database: 'Ready' },
-      },
+      data: { status: 'ready', value: 'Gaber' },
     });
   };
 
   const coordinator = new PollingCoordinator({ probeFn, retryIntervalMs: 10 });
   coordinator.start();
 
-  // Wait for attempts to complete
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(coordinator.isReady, true);
+  assert.equal(callCount, 3, 'Must reject unexpected responses and only mark ready on exact match');
+  coordinator.stop();
+});
+
+test('Case 6: Backend becomes ready after several retries -> transitions to ready and stops polling completely', async () => {
+  let attempts = 0;
+  const probeFn = async () => {
+    attempts++;
+    if (attempts < 3) {
+      return evaluateWakeUpResponse({ status: 503 });
+    }
+    return evaluateWakeUpResponse({
+      status: 200,
+      data: { status: 'ready', value: 'Gaber' },
+    });
+  };
+
+  const coordinator = new PollingCoordinator({ probeFn, retryIntervalMs: 10 });
+  coordinator.start();
+
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(coordinator.isReady, true);
   assert.equal(attempts, 3);
@@ -267,7 +280,7 @@ test('Case 5: Backend becomes ready after several retries -> transitions to read
   coordinator.stop();
 });
 
-test('Case 6: Backend remains unavailable -> shows prolonged-startup state, backs off retry rate, and allows immediate manual retry', async () => {
+test('Case 7: Backend remains unavailable -> shows prolonged-startup state, backs off retry rate, and allows immediate manual retry', async () => {
   let attempts = 0;
   const probeFn = async () => {
     attempts++;
@@ -284,24 +297,20 @@ test('Case 6: Backend remains unavailable -> shows prolonged-startup state, back
 
   coordinator.start();
 
-  // Wait for prolonged threshold to pass
   await new Promise((r) => setTimeout(r, 55));
-
-  // Trigger immediate check to update prolonged state
   await coordinator.retryNow();
 
   assert.equal(coordinator.isProlonged, true, 'isProlonged must be true after threshold');
   assert.equal(coordinator.isReady, false);
 
   const beforeManual = attempts;
-  // User clicks "Retry Now" button
   await coordinator.retryNow();
   assert.ok(attempts > beforeManual, 'Immediate probe must be initiated on retryNow');
 
   coordinator.stop();
 });
 
-test('Case 7: Strict non-overlapping enforcement under concurrent triggers', async () => {
+test('Case 8: Strict non-overlapping enforcement under concurrent triggers', async () => {
   let concurrentExecutions = 0;
   let maxObserved = 0;
 
@@ -324,19 +333,16 @@ test('Case 7: Strict non-overlapping enforcement under concurrent triggers', asy
   await new Promise((r) => setTimeout(r, 80));
   coordinator.stop();
 
-  assert.equal(maxObserved, 1, 'Never allow overlapping startup-check requests');
+  assert.equal(maxObserved, 1, 'Never allow overlapping wake-up requests');
 });
 
-test('Case 8: Re-render and navigation isolation -> once ready, no additional polling occurs', async () => {
+test('Case 9: Re-render and navigation isolation -> once ready, no additional polling occurs', async () => {
   let probeCount = 0;
   const probeFn = async () => {
     probeCount++;
-    return evaluateStartupResponse({
+    return evaluateWakeUpResponse({
       status: 200,
-      data: {
-        success: true,
-        data: { status: 'Ready', database: 'Ready' },
-      },
+      data: { status: 'ready', value: 'Gaber' },
     });
   };
 
@@ -350,6 +356,6 @@ test('Case 8: Re-render and navigation isolation -> once ready, no additional po
   coordinator.runProbe();
   coordinator.runProbe();
 
-  assert.equal(probeCount, 1, 'No additional probes executed once backend is confirmed ready');
+  assert.equal(probeCount, 1, 'No additional probes executed once backend is confirmed awake');
   coordinator.stop();
 });

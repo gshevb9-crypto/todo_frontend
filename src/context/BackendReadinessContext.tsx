@@ -58,8 +58,8 @@ export function BackendReadinessProvider({
     attemptCountRef.current += 1;
     const attempt = attemptCountRef.current;
 
-    // 1. Log: Startup readiness check initiated
-    console.log(`[StartupReadiness] Check #${attempt} initiated to /api/system/startup`);
+    // 1. Log: Backend wake-up check initiated
+    console.log(`[StartupReadiness] Check #${attempt} initiated to /api/system/wake-up`);
 
     // Check if the prolonged threshold has passed
     const elapsed = Date.now() - overallStartTimeRef.current;
@@ -112,10 +112,10 @@ export function BackendReadinessProvider({
       console.log(
         `[StartupReadiness] Check #${attempt} succeeded in ${probeResult?.durationMs}ms (HTTP ${
           probeResult?.status ?? 200
-        }). Database dependency confirmed ready.`
+        }). Backend confirmed awake with { status: "ready", value: "Gaber" }.`
       );
       console.log(
-        `[StartupReadiness] Successful readiness confirmation! Total time until backend ready: ${totalTimeMs}ms (${attempt} attempt(s)). Stopping polling permanently.`
+        `[StartupReadiness] Successful wake-up confirmation! Total time until backend ready: ${totalTimeMs}ms (${attempt} attempt(s)). Stopping polling permanently.`
       );
 
       isReadyRef.current = true;
