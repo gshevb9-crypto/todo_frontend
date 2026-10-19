@@ -26,8 +26,10 @@ export default function NotesPage() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabDetailDto | null>(null);
 
-  // Responsive mobile drawer state
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  // Responsive sidebar open/collapse state (desktop default open, mobile default closed)
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    return typeof window !== 'undefined' ? window.innerWidth >= 1024 : false;
+  });
 
   // Note content state
   const [content, setContent] = useState<string>('');
@@ -60,8 +62,8 @@ export default function NotesPage() {
     fileName: '',
   });
 
-  // Image upload state
-  const [showImageDrawer, setShowImageDrawer] = useState<boolean>(true);
+  // Image upload state (default closed on mobile so editor has 100% height)
+  const [showImageDrawer, setShowImageDrawer] = useState<boolean>(false);
   const [uploadingImage, setUploadingImage] = useState<boolean>(false);
   const [replacingImageId, setReplacingImageId] = useState<string | null>(null);
 
@@ -80,6 +82,17 @@ export default function NotesPage() {
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
   }, [activeTabId]);
+
+  // Close sidebar on Escape key if in mobile drawer mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && window.innerWidth < 1024 && sidebarOpen) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [sidebarOpen]);
 
   // ── Flush Pending Save ─────────────────────────────────────────
   const flushSave = useCallback(async (tabIdToSave?: string | null, textToSave?: string) => {
@@ -203,7 +216,9 @@ export default function NotesPage() {
   // ── Switch Tab Safely ─────────────────────────────────────────
   const handleSelectTab = (newTabId: string) => {
     // 1. Immediately dismiss mobile drawer synchronously so note editor is revealed
-    setSidebarOpen(false);
+    if (window.innerWidth < 1024) {
+      setSidebarOpen(false);
+    }
 
     if (newTabId === activeTabId) {
       return;
@@ -236,7 +251,6 @@ export default function NotesPage() {
   // ── Tab Management Actions ───────────────────────────────────
   const handleCreateNewTab = async () => {
     try {
-      // Flush previous tab if modified
       if (activeTabId && pendingContentRef.current !== lastSavedContentRef.current) {
         await flushSave(activeTabId, pendingContentRef.current);
       }
@@ -244,7 +258,9 @@ export default function NotesPage() {
       const newTab = await createTab('Untitled Notebook', '📝', tabs.length);
       setTabs((prev) => [...prev, newTab]);
       setActiveTabId(newTab.id);
-      setSidebarOpen(false);
+      if (window.innerWidth < 1024) {
+        setSidebarOpen(false);
+      }
     } catch (err) {
       console.error('Failed to create tab', err);
     }
@@ -291,6 +307,27 @@ export default function NotesPage() {
       return false;
     }
     return true;
+  };
+
+  // Direct Image Upload used by RichTextEditor's toolbar button
+  const handleDirectImageUpload = async (file: File): Promise<string | null> => {
+    if (!activeTabId) return null;
+    if (!validateImageFile(file)) return null;
+
+    setUploadingImage(true);
+    try {
+      const uploaded = await uploadTabImage(activeTabId, file);
+      setActiveTab((prev) => (prev ? { ...prev, images: [...prev.images, uploaded] } : null));
+      setTabs((prev) =>
+        prev.map((t) => (t.id === activeTabId ? { ...t, imagesCount: t.imagesCount + 1 } : t))
+      );
+      return uploaded.url;
+    } catch (err: any) {
+      alert(err?.response?.data?.message || 'Failed to upload image.');
+      return null;
+    } finally {
+      setUploadingImage(false);
+    }
   };
 
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -372,6 +409,10 @@ export default function NotesPage() {
     if (editorRef.current) {
       editorRef.current.insertImage(image.url, image.originalFileName);
     }
+    // On mobile, auto close the image drawer so user returns to typing
+    if (window.innerWidth < 1024) {
+      setShowImageDrawer(false);
+    }
   };
 
   const formatFileSize = (bytes: number): string => {
@@ -389,14 +430,14 @@ export default function NotesPage() {
         aria-hidden="true"
       />
 
-      {/* ── Left Sidebar (Responsive Drawer on Mobile) ───────────── */}
+      {/* ── Left Sidebar (Responsive Drawer on Mobile, Collapsible on Desktop) ── */}
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`} aria-label="Notebook navigation">
         <div className="sidebar-header">
           <div className="brand-wrapper">
             <span className="brand-icon">📓</span>
             <span className="brand-title">Workspace</span>
           </div>
-          {/* Prominent, accessible close button inside drawer for mobile */}
+          {/* Prominent, accessible close button inside drawer */}
           <button
             type="button"
             className="btn-sidebar-close"
@@ -404,8 +445,8 @@ export default function NotesPage() {
               e.stopPropagation();
               setSidebarOpen(false);
             }}
-            aria-label="Close navigation panel"
-            title="Close navigation"
+            aria-label="Close notebook sidebar"
+            title="Close sidebar"
           >
             <svg
               width="20"
@@ -512,26 +553,26 @@ export default function NotesPage() {
 
       {/* ── Main Workspace ──────────────────────────────────────── */}
       <main className="workspace">
-        {activeTab ? (
-          <>
-            {/* ── Responsive Top Bar ────────────────────────────── */}
-            <header className="workspace-topbar">
-              <div className="workspace-tab-meta">
-                {/* Mobile hamburger toggle button */}
-                <button
-                  type="button"
-                  className="btn-sidebar-toggle"
-                  onClick={() => setSidebarOpen((prev) => !prev)}
-                  aria-label="Toggle notebook list"
-                  title="Open notebooks menu"
-                >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <line x1="3" y1="12" x2="21" y2="12" />
-                    <line x1="3" y1="6" x2="21" y2="6" />
-                    <line x1="3" y1="18" x2="21" y2="18" />
-                  </svg>
-                </button>
+        {/* ── Always-Accessible Notion-Style Top Bar ─────────────── */}
+        <header className="workspace-topbar">
+          <div className="workspace-tab-meta">
+            {/* Sidebar toggle button (Always present so mobile users can never get stuck!) */}
+            <button
+              type="button"
+              className="btn-sidebar-toggle"
+              onClick={() => setSidebarOpen((prev) => !prev)}
+              aria-label={sidebarOpen ? 'Hide notebook sidebar' : 'Open notebook sidebar'}
+              title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
 
+            {activeTab ? (
+              <>
                 <button
                   type="button"
                   className="tab-icon-picker-btn"
@@ -562,9 +603,17 @@ export default function NotesPage() {
                   placeholder="Notebook title..."
                   aria-label="Notebook title"
                 />
-              </div>
+              </>
+            ) : (
+              <span className="workspace-placeholder-title">
+                {loadingTabs ? 'Loading notebooks...' : 'Workspace'}
+              </span>
+            )}
+          </div>
 
-              <div className="workspace-actions">
+          <div className="workspace-actions">
+            {activeTab && (
+              <>
                 {/* Save status indicator */}
                 <div
                   className={`save-status-pill ${saveStatus}`}
@@ -577,29 +626,46 @@ export default function NotesPage() {
                   {saveStatus === 'saved' && <span>● Saved</span>}
                   {saveStatus === 'saving' && <span>○ Saving...</span>}
                   {saveStatus === 'unsaved' && <span>○ Unsaved</span>}
-                  {saveStatus === 'error' && <span>⚠ Error (Retry)</span>}
+                  {saveStatus === 'error' && <span>⚠ Retry</span>}
                 </div>
 
                 <button
                   type="button"
-                  className="btn-action-secondary"
+                  className={`btn-action-secondary ${showImageDrawer ? 'active' : ''}`}
                   onClick={() => setShowImageDrawer((prev) => !prev)}
                   aria-label="Toggle images drawer"
+                  title="View attached images"
                 >
                   <span>🖼️ Images ({activeTab.images.length})</span>
                 </button>
 
                 <button
                   type="button"
-                  className="btn-action-primary"
+                  className="btn-action-primary btn-save-quick"
                   onClick={handleManualSave}
                   disabled={saveStatus === 'saving'}
+                  title="Save current note (Ctrl+S)"
                 >
-                  {saveStatus === 'saving' ? 'Saving...' : 'Save Note'}
+                  {saveStatus === 'saving' ? 'Saving...' : 'Save'}
                 </button>
-              </div>
-            </header>
+              </>
+            )}
 
+            {!activeTab && (
+              <button
+                type="button"
+                className="btn-action-primary"
+                onClick={handleCreateNewTab}
+              >
+                + New Notebook
+              </button>
+            )}
+          </div>
+        </header>
+
+        {/* ── Note Workspace Body ─────────────────────────────────── */}
+        {activeTab ? (
+          <>
             {loadingActiveTab ? (
               <div className="empty-state">
                 <div style={{ fontSize: '2rem' }}>⏳</div>
@@ -612,6 +678,8 @@ export default function NotesPage() {
                   content={content}
                   onChange={handleEditorChange}
                   onSave={handleManualSave}
+                  onUploadImage={handleDirectImageUpload}
+                  attachedImages={activeTab.images}
                 />
               </div>
             )}
@@ -632,31 +700,42 @@ export default function NotesPage() {
               onChange={handleReplaceFileSelected}
             />
 
-            {/* ── Image Drawer Panel ───────────────────────────── */}
+            {/* ── Slide-up Image Drawer Panel ─────────────────────── */}
             {showImageDrawer && (
               <div className="image-drawer" aria-label="Attached images drawer">
                 <div className="image-drawer-header">
                   <div className="image-drawer-title">
-                    <span>Attached Images</span>
+                    <span>Attached Images ({activeTab.images.length})</span>
                     <span className="image-drawer-subtitle">
-                      (Persistent storage)
+                      (Saved to server storage)
                     </span>
                   </div>
 
-                  <button
-                    type="button"
-                    className="btn-action-primary"
-                    style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem' }}
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploadingImage}
-                  >
-                    {uploadingImage ? 'Uploading...' : '+ Upload Image'}
-                  </button>
+                  <div className="image-drawer-header-actions">
+                    <button
+                      type="button"
+                      className="btn-action-primary"
+                      style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem' }}
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadingImage}
+                    >
+                      {uploadingImage ? 'Uploading...' : '+ Upload Image'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-drawer-close"
+                      onClick={() => setShowImageDrawer(false)}
+                      aria-label="Close image drawer"
+                      title="Close drawer"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
 
                 {activeTab.images.length === 0 ? (
-                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                    No images attached to this tab yet. Click "+ Upload Image" to add photos or screenshots.
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', padding: '0.5rem 0' }}>
+                    No images attached to this notebook yet. Click "+ Upload Image" or use the 🖼️ button in the formatting bar to add photos.
                   </p>
                 ) : (
                   <div className="image-grid">
@@ -672,7 +751,7 @@ export default function NotesPage() {
                             <button
                               type="button"
                               className="btn-image-action"
-                              title="Insert image into rich text editor"
+                              title="Insert image into note editor"
                               onClick={() => handleInsertImageIntoNote(img)}
                             >
                               Insert
@@ -716,13 +795,22 @@ export default function NotesPage() {
             <span className="empty-state-icon">📝</span>
             <h2>No Notebook Selected</h2>
             <p>Select a notebook from the sidebar or create a new one to begin writing.</p>
-            <button
-              type="button"
-              className="btn-action-primary"
-              onClick={handleCreateNewTab}
-            >
-              + Create First Notebook
-            </button>
+            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="btn-action-secondary"
+                onClick={() => setSidebarOpen(true)}
+              >
+                ☰ Open Notebooks Menu
+              </button>
+              <button
+                type="button"
+                className="btn-action-primary"
+                onClick={handleCreateNewTab}
+              >
+                + Create First Notebook
+              </button>
+            </div>
           </div>
         )}
       </main>

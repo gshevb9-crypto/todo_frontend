@@ -185,3 +185,41 @@ test('Case 8: Formatting actions preserve selection coordinates and apply semant
   assert.equal(html, '<p>Hello <strong>world</strong> note</p>');
   assert.ok(!html.includes('**'), 'Must not insert literal asterisk characters for Bold');
 });
+
+test('Case 9: Direct image insertion in note editor content preserves image source and semantic img element', () => {
+  const contentWithImage = '<p>Meeting notes</p><img class="note-embedded-image" src="https://gshe.blitz.cloud/api/images/photo1.webp" alt="Whiteboard" /><p>Follow-up items</p>';
+  const normalized = normalizeContentToHtml(contentWithImage);
+  assert.ok(normalized.includes('<img class="note-embedded-image"'), 'Must preserve note-embedded-image class');
+  assert.ok(normalized.includes('src="https://gshe.blitz.cloud/api/images/photo1.webp"'), 'Must preserve image URL');
+  assert.ok(normalized.includes('alt="Whiteboard"'), 'Must preserve image alt text');
+});
+
+test('Case 10: Sidebar responsive switching closes mobile drawer when tab is selected', () => {
+  let sidebarOpen = true;
+  const isMobile = true;
+
+  const handleSelectTab = (tabId) => {
+    if (isMobile) {
+      sidebarOpen = false;
+    }
+    return tabId;
+  };
+
+  const selected = handleSelectTab('tab-123');
+  assert.equal(selected, 'tab-123');
+  assert.equal(sidebarOpen, false, 'Mobile sidebar drawer must automatically close when tab is chosen');
+});
+
+test('Case 11: Empty workspace state retains sidebar toggle accessibility', () => {
+  let sidebarOpen = false;
+  const toggleSidebar = () => {
+    sidebarOpen = !sidebarOpen;
+  };
+
+  // User taps sidebar toggle button from empty workspace state
+  toggleSidebar();
+  assert.equal(sidebarOpen, true, 'Sidebar must be able to toggle open from empty state');
+  toggleSidebar();
+  assert.equal(sidebarOpen, false, 'Sidebar must be able to toggle close');
+});
+

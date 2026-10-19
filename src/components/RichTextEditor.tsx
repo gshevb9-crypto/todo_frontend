@@ -12,19 +12,45 @@ export interface RichTextEditorRef {
   focus: () => void;
 }
 
+export interface AttachedImageItem {
+  id: string;
+  url: string;
+  originalFileName: string;
+}
+
 interface RichTextEditorProps {
   content: string;
   onChange: (html: string) => void;
   onSave?: () => void;
+  onUploadImage?: (file: File) => Promise<string | null>;
+  attachedImages?: AttachedImageItem[];
   placeholder?: string;
   editable?: boolean;
 }
 
 export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
-  ({ content, onChange, onSave, placeholder = 'Start typing your note here...', editable = true }, ref) => {
+  (
+    {
+      content,
+      onChange,
+      onSave,
+      onUploadImage,
+      attachedImages = [],
+      placeholder = 'Type something, or use the formatting tools above...',
+      editable = true,
+    },
+    ref
+  ) => {
     const [overflowOpen, setOverflowOpen] = useState(false);
+    const [imageMenuOpen, setImageMenuOpen] = useState(false);
+    const [isUploadingImage, setIsUploadingImage] = useState(false);
+    const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+
     const overflowMenuRef = useRef<HTMLDivElement>(null);
     const overflowButtonRef = useRef<HTMLButtonElement>(null);
+    const imageMenuRef = useRef<HTMLDivElement>(null);
+    const imageButtonRef = useRef<HTMLButtonElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const savedSelectionRef = useRef<{ from: number; to: number } | null>(null);
 
     const editor = useEditor({
@@ -105,13 +131,12 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
       }
     }, [content, editor]);
 
-    // Close overflow menu when clicking outside
+    // Handle clicks outside dropdown menus
     useEffect(() => {
-      if (!overflowOpen) return;
-
       const handlePointerDownOutside = (event: PointerEvent) => {
         const target = event.target as Node | null;
         if (
+          overflowOpen &&
           overflowMenuRef.current &&
           !overflowMenuRef.current.contains(target) &&
           overflowButtonRef.current &&
@@ -119,11 +144,23 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
         ) {
           setOverflowOpen(false);
         }
+
+        if (
+          imageMenuOpen &&
+          imageMenuRef.current &&
+          !imageMenuRef.current.contains(target) &&
+          imageButtonRef.current &&
+          !imageButtonRef.current.contains(target)
+        ) {
+          setImageMenuOpen(false);
+        }
       };
 
       const handleKeyDown = (event: KeyboardEvent) => {
         if (event.key === 'Escape') {
           setOverflowOpen(false);
+          setImageMenuOpen(false);
+          setPreviewImageUrl(null);
           editor?.commands.focus();
         }
       };
@@ -135,7 +172,18 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
         document.removeEventListener('pointerdown', handlePointerDownOutside);
         document.removeEventListener('keydown', handleKeyDown);
       };
-    }, [overflowOpen, editor]);
+    }, [overflowOpen, imageMenuOpen, editor]);
+
+    // Click handler for images inside editor to preview full-screen
+    const handleEditorContainerClick = (e: React.MouseEvent<HTMLDivElement>) => {
+      const target = e.target as HTMLElement;
+      if (target && target.tagName === 'IMG' && target.classList.contains('note-embedded-image')) {
+        const src = (target as HTMLImageElement).src;
+        if (src) {
+          setPreviewImageUrl(src);
+        }
+      }
+    };
 
     // Prevent mousedown from stealing editor selection focus
     const handlePreventFocusLoss = useCallback((e: React.MouseEvent) => {
@@ -145,7 +193,6 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
     // Save selection and toggle overflow menu
     const toggleOverflowMenu = useCallback(() => {
       if (editor) {
-        // Save current selection coordinates
         savedSelectionRef.current = {
           from: editor.state.selection.from,
           to: editor.state.selection.to,
@@ -159,7 +206,6 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
       (action: () => void, closeMenu = false) => {
         if (!editor) return;
 
-        // Restore saved selection if available
         if (savedSelectionRef.current) {
           editor.commands.setTextSelection(savedSelectionRef.current);
         }
@@ -174,6 +220,54 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
       [editor]
     );
 
+    // Direct Image Upload Trigger
+    const handleImageButtonClick = () => {
+      if (!onUploadImage) {
+        // Fallback: prompt for image URL
+        const url = window.prompt('Enter image URL:');
+        if (url && editor) {
+          editor.chain().focus().setImage({ src: url }).run();
+        }
+        return;
+      }
+
+      if (attachedImages.length > 0) {
+        // Show options menu: Upload new or pick from existing
+        setImageMenuOpen((prev) => !prev);
+      } else {
+        // Directly trigger file picker
+        fileInputRef.current?.click();
+      }
+    };
+
+    const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file || !onUploadImage) return;
+
+      setIsUploadingImage(true);
+      try {
+        const uploadedUrl = await onUploadImage(file);
+        if (uploadedUrl && editor) {
+          editor.chain().focus().setImage({ src: uploadedUrl, alt: file.name }).run();
+        }
+      } catch (err) {
+        console.error('Image upload failed', err);
+      } finally {
+        setIsUploadingImage(false);
+        setImageMenuOpen(false);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      }
+    };
+
+    const handleInsertExistingImage = (img: AttachedImageItem) => {
+      if (editor) {
+        editor.chain().focus().setImage({ src: img.url, alt: img.originalFileName }).run();
+      }
+      setImageMenuOpen(false);
+    };
+
     if (!editor) {
       return (
         <div className="editor-loading-placeholder">
@@ -184,9 +278,18 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
 
     return (
       <div className="rich-editor-wrapper">
-        {/* ── Responsive Formatting Toolbar ─────────────────────────────── */}
+        {/* Hidden File Input for Direct Toolbar Image Upload */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          style={{ display: 'none' }}
+          accept="image/*"
+          onChange={handleFileInputChange}
+        />
+
+        {/* ── Notion-Style Touch-Friendly Formatting Toolbar Ribbon ─────────────────── */}
         <div className="toolbar" role="toolbar" aria-label="Text formatting toolbar">
-          {/* History Controls (Always visible) */}
+          {/* History Controls */}
           <div className="toolbar-group">
             <button
               type="button"
@@ -214,22 +317,8 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
 
           <div className="toolbar-divider" />
 
-          {/* Quick Bold Control (Always visible on all screens) */}
+          {/* Block Formatting: Paragraph & Headings */}
           <div className="toolbar-group">
-            <button
-              type="button"
-              className={`toolbar-btn ${editor.isActive('bold') ? 'active' : ''}`}
-              title="Bold (Ctrl+B)"
-              aria-label="Bold text"
-              onMouseDown={handlePreventFocusLoss}
-              onClick={() => runFormattingAction(() => editor.chain().focus().toggleBold().run())}
-            >
-              <strong>B</strong>
-            </button>
-          </div>
-
-          {/* Desktop-only Block Formatting: Paragraph & Headings */}
-          <div className="toolbar-group toolbar-desktop-only">
             <button
               type="button"
               className={`toolbar-btn ${editor.isActive('paragraph') ? 'active' : ''}`}
@@ -272,10 +361,20 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
             </button>
           </div>
 
-          <div className="toolbar-divider toolbar-desktop-only" />
+          <div className="toolbar-divider" />
 
-          {/* Desktop-only Inline Styles: Italic, Underline, Strikethrough, Code */}
-          <div className="toolbar-group toolbar-desktop-only">
+          {/* Inline Styles: Bold, Italic, Underline, Strikethrough, Code */}
+          <div className="toolbar-group">
+            <button
+              type="button"
+              className={`toolbar-btn ${editor.isActive('bold') ? 'active' : ''}`}
+              title="Bold (Ctrl+B)"
+              aria-label="Bold text"
+              onMouseDown={handlePreventFocusLoss}
+              onClick={() => runFormattingAction(() => editor.chain().focus().toggleBold().run())}
+            >
+              <strong>B</strong>
+            </button>
             <button
               type="button"
               className={`toolbar-btn ${editor.isActive('italic') ? 'active' : ''}`}
@@ -318,10 +417,10 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
             </button>
           </div>
 
-          <div className="toolbar-divider toolbar-desktop-only" />
+          <div className="toolbar-divider" />
 
-          {/* Desktop-only Lists & Blocks */}
-          <div className="toolbar-group toolbar-desktop-only">
+          {/* Lists & Blocks: Bullet, Numbered, Quote, Code Block */}
+          <div className="toolbar-group">
             <button
               type="button"
               className={`toolbar-btn ${editor.isActive('bulletList') ? 'active' : ''}`}
@@ -364,10 +463,72 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
             </button>
           </div>
 
-          <div className="toolbar-divider toolbar-desktop-only" />
+          <div className="toolbar-divider" />
 
-          {/* Desktop-only Formatting Reset */}
-          <div className="toolbar-group toolbar-desktop-only">
+          {/* ── Direct Image Insert/Upload Control ───────────────── */}
+          <div className="toolbar-group toolbar-image-container">
+            <button
+              ref={imageButtonRef}
+              type="button"
+              className={`toolbar-btn toolbar-image-btn ${isUploadingImage ? 'uploading' : ''}`}
+              title="Insert Image (Upload or Pick from Tab)"
+              aria-label="Insert Image"
+              onMouseDown={handlePreventFocusLoss}
+              onClick={handleImageButtonClick}
+              disabled={isUploadingImage}
+            >
+              {isUploadingImage ? (
+                <span className="toolbar-loading-spinner" />
+              ) : (
+                <span>🖼️ Image</span>
+              )}
+            </button>
+
+            {/* Image Source Dropdown (if tab already has attached photos) */}
+            {imageMenuOpen && (
+              <div
+                ref={imageMenuRef}
+                className="toolbar-dropdown-menu image-picker-dropdown"
+                onMouseDown={handlePreventFocusLoss}
+              >
+                <div className="dropdown-section-title">Insert Image into Note</div>
+                <button
+                  type="button"
+                  className="dropdown-menu-item"
+                  onClick={() => {
+                    fileInputRef.current?.click();
+                  }}
+                >
+                  <span className="dropdown-item-icon">📁</span>
+                  <span>Upload from device</span>
+                </button>
+
+                {attachedImages.length > 0 && (
+                  <>
+                    <div className="dropdown-divider" />
+                    <div className="dropdown-section-title">Notebook Gallery ({attachedImages.length})</div>
+                    <div className="toolbar-image-grid-preview">
+                      {attachedImages.map((img) => (
+                        <div
+                          key={img.id}
+                          className="toolbar-thumb-item"
+                          title={`Insert ${img.originalFileName}`}
+                          onClick={() => handleInsertExistingImage(img)}
+                        >
+                          <img src={img.url} alt={img.originalFileName} />
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="toolbar-divider" />
+
+          {/* Quick Clear Formatting */}
+          <div className="toolbar-group">
             <button
               type="button"
               className="toolbar-btn"
@@ -380,7 +541,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
             </button>
           </div>
 
-          {/* ── Mobile Overflow Trigger Button ─────────────────────── */}
+          {/* ── Extended Formatting Overflow Trigger (Three-dot) ──── */}
           <div className="toolbar-overflow-container">
             <button
               ref={overflowButtonRef}
@@ -410,7 +571,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
               </svg>
             </button>
 
-            {/* ── Responsive Three-Dot Overflow Dropdown Menu ──────────── */}
+            {/* Overflow Dropdown Menu */}
             {overflowOpen && (
               <div
                 ref={overflowMenuRef}
@@ -419,7 +580,6 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
                 aria-label="Extended formatting options"
                 onMouseDown={handlePreventFocusLoss}
               >
-                {/* Section: Headings */}
                 <div className="overflow-section-label">Headings & Structure</div>
                 <div className="overflow-grid">
                   <button
@@ -469,8 +629,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
 
                 <div className="overflow-menu-divider" />
 
-                {/* Section: Inline Styles */}
-                <div className="overflow-section-label">Text Styles</div>
+                <div className="overflow-section-label">Inline Styles</div>
                 <div className="overflow-grid">
                   <button
                     type="button"
@@ -530,7 +689,6 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
 
                 <div className="overflow-menu-divider" />
 
-                {/* Section: Lists & Blocks */}
                 <div className="overflow-section-label">Lists & Blocks</div>
                 <div className="overflow-grid">
                   <button
@@ -580,7 +738,6 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
 
                 <div className="overflow-menu-divider" />
 
-                {/* Section: Formatting Reset */}
                 <button
                   type="button"
                   role="menuitem"
@@ -596,10 +753,55 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
           </div>
         </div>
 
-        {/* ── ProseMirror Editor Content Area ──────────────────────────────── */}
-        <div className="editor-viewport" onClick={() => editor.commands.focus()}>
+        {/* ── ProseMirror Editor Viewport ─────────────────────────────────── */}
+        <div
+          className="editor-viewport"
+          onClick={handleEditorContainerClick}
+        >
           <EditorContent editor={editor} />
         </div>
+
+        {/* ── Image Lightbox Fullscreen Preview Modal ──────────────────────── */}
+        {previewImageUrl && (
+          <div
+            className="image-lightbox-overlay"
+            onClick={() => setPreviewImageUrl(null)}
+            role="dialog"
+            aria-label="Image preview"
+          >
+            <button
+              type="button"
+              className="image-lightbox-close"
+              onClick={() => setPreviewImageUrl(null)}
+              aria-label="Close image preview"
+            >
+              ✕
+            </button>
+            <div
+              className="image-lightbox-content"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <img src={previewImageUrl} alt="Enlarged note attachment" />
+              <div className="image-lightbox-actions">
+                <a
+                  href={previewImageUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-lightbox-action"
+                >
+                  Open Original
+                </a>
+                <button
+                  type="button"
+                  className="btn-lightbox-action"
+                  onClick={() => setPreviewImageUrl(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
