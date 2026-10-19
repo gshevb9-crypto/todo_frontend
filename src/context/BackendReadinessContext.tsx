@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { checkBackendHealth } from '../api/health.api';
+import { checkBackendStartup, ReadinessProbeResult } from '../api/startup.api';
 
 export interface BackendReadinessContextValue {
   isReady: boolean;
@@ -11,10 +11,12 @@ export interface BackendReadinessContextValue {
 
 const BackendReadinessContext = createContext<BackendReadinessContextValue | null>(null);
 
-// Default prolonged startup threshold: 90 seconds
+// Default prolonged startup threshold: 90 seconds (within 90-120 seconds range)
 const DEFAULT_PROLONGED_THRESHOLD_MS = 90_000;
-// Poll retry interval: 2 seconds after the previous request finishes
-const RETRY_INTERVAL_MS = 2_000;
+// Normal retry interval: 2 seconds after the previous request completes
+const NORMAL_RETRY_INTERVAL_MS = 2_000;
+// Safe prolonged retry interval: backs off to 6 seconds to avoid aggressive polling indefinitely
+const PROLONGED_RETRY_INTERVAL_MS = 6_000;
 
 interface BackendReadinessProviderProps {
   children: React.ReactNode;
@@ -35,8 +37,10 @@ export function BackendReadinessProvider({
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const isMountedRef = useRef(true);
-  const startTimeRef = useRef<number>(Date.now());
+  const overallStartTimeRef = useRef<number>(Date.now());
   const isReadyRef = useRef(false);
+  const attemptCountRef = useRef(0);
+  const hasLoggedProlongedRef = useRef(false);
 
   // Keep isReadyRef in sync
   useEffect(() => {
@@ -51,21 +55,35 @@ export function BackendReadinessProvider({
 
     inFlightRef.current = true;
     setIsChecking(true);
+    attemptCountRef.current += 1;
+    const attempt = attemptCountRef.current;
+
+    // 1. Log: Startup readiness check initiated
+    console.log(`[StartupReadiness] Check #${attempt} initiated to /api/system/startup`);
 
     // Check if the prolonged threshold has passed
-    const elapsed = Date.now() - startTimeRef.current;
+    const elapsed = Date.now() - overallStartTimeRef.current;
     if (elapsed >= prolongedThresholdMs) {
       setIsProlonged(true);
+      // Log: Transition to the prolonged-startup error state
+      if (!hasLoggedProlongedRef.current) {
+        hasLoggedProlongedRef.current = true;
+        console.warn(
+          `[StartupReadiness] Transition to prolonged-startup error state: backend startup has taken ${Math.round(
+            elapsed / 1000
+          )}s (threshold: ${prolongedThresholdMs / 1000}s). Displaying user-friendly Arabic alert and manual Retry button.`
+        );
+      }
     }
 
     // Set up new AbortController for this probe
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    let ready = false;
+    let probeResult: ReadinessProbeResult | null = null;
 
     try {
-      ready = await checkBackendHealth(abortController.signal);
+      probeResult = await checkBackendStartup(abortController.signal);
     } catch (err: any) {
       // Aborted probe due to unmount or manual retry
       if (err?.name === 'CanceledError' || abortController.signal.aborted) {
@@ -73,7 +91,11 @@ export function BackendReadinessProvider({
         setIsChecking(false);
         return;
       }
-      ready = false;
+      probeResult = {
+        isReady: false,
+        durationMs: 0,
+        errorMessage: err?.message || 'Aborted or unknown error',
+      };
     } finally {
       inFlightRef.current = false;
       setIsChecking(false);
@@ -82,8 +104,20 @@ export function BackendReadinessProvider({
 
     if (!isMountedRef.current) return;
 
-    if (ready) {
-      // Backend is confirmed ready! Stop polling completely.
+    const isConfirmedReady = probeResult?.isReady === true;
+
+    if (isConfirmedReady) {
+      // 2. Log: Successful readiness confirmation and total time until ready
+      const totalTimeMs = Date.now() - overallStartTimeRef.current;
+      console.log(
+        `[StartupReadiness] Check #${attempt} succeeded in ${probeResult?.durationMs}ms (HTTP ${
+          probeResult?.status ?? 200
+        }). Database dependency confirmed ready.`
+      );
+      console.log(
+        `[StartupReadiness] Successful readiness confirmation! Total time until backend ready: ${totalTimeMs}ms (${attempt} attempt(s)). Stopping polling permanently.`
+      );
+
       isReadyRef.current = true;
       setIsReady(true);
       if (timerRef.current) {
@@ -93,18 +127,31 @@ export function BackendReadinessProvider({
       return;
     }
 
+    // 3. Log: HTTP status or network/timeout failure with attempt number and request duration
+    console.warn(
+      `[StartupReadiness] Check #${attempt} failed after ${probeResult?.durationMs ?? 0}ms. Status: HTTP ${
+        probeResult?.status ?? 'N/A'
+      }, Error: ${probeResult?.errorMessage || 'Not ready'}. Scheduling retry.`
+    );
+
     // Backend is not yet ready. Increment retry count and schedule next attempt.
     setRetryCount((prev) => prev + 1);
 
-    // Schedule next retry 2 seconds after completion (no overlapping requests)
+    // Safe retry policy:
+    // 2 seconds during normal startup; backs off to 6 seconds if prolonged, avoiding aggressive indefinite polling.
+    const isNowProlonged = Date.now() - overallStartTimeRef.current >= prolongedThresholdMs;
+    const intervalMs = isNowProlonged ? PROLONGED_RETRY_INTERVAL_MS : NORMAL_RETRY_INTERVAL_MS;
+
     timerRef.current = setTimeout(() => {
       runProbe();
-    }, RETRY_INTERVAL_MS);
+    }, intervalMs);
   }, [prolongedThresholdMs]);
 
   const retryNow = useCallback(() => {
     // If already ready, do nothing
     if (isReadyRef.current) return;
+
+    console.log('[StartupReadiness] Manual retry triggered by user.');
 
     // Clear any pending timer
     if (timerRef.current) {
@@ -124,7 +171,9 @@ export function BackendReadinessProvider({
   // Main startup readiness effect
   useEffect(() => {
     isMountedRef.current = true;
-    startTimeRef.current = Date.now();
+    overallStartTimeRef.current = Date.now();
+    attemptCountRef.current = 0;
+    hasLoggedProlongedRef.current = false;
 
     // Start initial probe
     runProbe();

@@ -2,27 +2,46 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 /**
- * Direct unit test suite for the Backend Health & Readiness polling engine.
- * Validates all 8 requirement cases outlined in the task specification.
+ * Direct unit test suite for the Backend Real Startup & Readiness polling engine.
+ * Validates all required startup readiness contract behaviors:
+ * 1. Backend already awake -> proceeds to ready on first check and stops polling.
+ * 2. Backend is sleeping -> retries safely without crashing and maintains loading state.
+ * 3. Startup returns HTTP 503 Service Unavailable -> treated as transient and retries.
+ * 4. Startup request times out -> recovers by retrying without creating overlapping requests.
+ * 5. Backend becomes ready after several retries -> transitions to ready and stops polling permanently.
+ * 6. Backend remains unavailable -> enters prolonged state, backs off retry rate, and supports manual retryNow.
+ * 7. Strict non-overlapping enforcement under concurrent triggers.
+ * 8. Re-render and navigation isolation -> once ready, no additional probes occur.
  */
 
-// Simulation of health check endpoint contract logic
-function evaluateHealthResponse(response) {
+// Simulation of startup readiness endpoint contract logic (GET /api/system/startup)
+function evaluateStartupResponse(response) {
   if (!response || typeof response.status !== 'number') return false;
   if (response.status < 200 || response.status >= 300) return false;
 
-  const data = response.data;
-  const isStatusHealthy = typeof data?.status === 'string' && data.status.toLowerCase() === 'healthy';
-  const isDbOk = data?.database ? data.database.toLowerCase() === 'connected' : true;
+  const body = response.data;
+  const isSuccess = body?.success === true;
+  const isStatusReady =
+    typeof body?.data?.status === 'string' &&
+    body.data.status.trim().toLowerCase() === 'ready';
+  const isDatabaseReady =
+    typeof body?.data?.database === 'string' &&
+    body.data.database.trim().toLowerCase() === 'ready';
 
-  return Boolean(isStatusHealthy && isDbOk);
+  return Boolean(isSuccess && isStatusReady && isDatabaseReady);
 }
 
-// Simulation of the exact polling coordinator used in BackendReadinessContext
+// Simulation of the polling coordinator used in BackendReadinessContext
 class PollingCoordinator {
-  constructor({ probeFn, retryIntervalMs = 20, prolongedThresholdMs = 100 }) {
+  constructor({
+    probeFn,
+    retryIntervalMs = 20,
+    prolongedRetryIntervalMs = 60,
+    prolongedThresholdMs = 100,
+  }) {
     this.probeFn = probeFn;
     this.retryIntervalMs = retryIntervalMs;
+    this.prolongedRetryIntervalMs = prolongedRetryIntervalMs;
     this.prolongedThresholdMs = prolongedThresholdMs;
 
     this.isReady = false;
@@ -51,7 +70,8 @@ class PollingCoordinator {
       this.maxConcurrentRequests = this.activeRequestsCount;
     }
 
-    if (Date.now() - this._startTime >= this.prolongedThresholdMs) {
+    const elapsed = Date.now() - this._startTime;
+    if (elapsed >= this.prolongedThresholdMs) {
       this.isProlonged = true;
     }
 
@@ -76,9 +96,12 @@ class PollingCoordinator {
     }
 
     this.retryCount++;
+    const isNowProlonged = Date.now() - this._startTime >= this.prolongedThresholdMs;
+    const interval = isNowProlonged ? this.prolongedRetryIntervalMs : this.retryIntervalMs;
+
     this._timer = setTimeout(() => {
       this.runProbe();
-    }, this.retryIntervalMs);
+    }, interval);
   }
 
   start() {
@@ -106,9 +129,18 @@ test('Case 1: Backend is already awake -> proceeds to ready on first check and s
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    return evaluateHealthResponse({
+    return evaluateStartupResponse({
       status: 200,
-      data: { status: 'Healthy', database: 'Connected', service: 'ToDo & Notes API' },
+      data: {
+        success: true,
+        message: 'Backend application and database dependency are ready.',
+        data: {
+          status: 'Ready',
+          service: 'ToDo & Notes API',
+          database: 'Ready',
+          timestamp: new Date().toISOString(),
+        },
+      },
     });
   };
 
@@ -129,14 +161,13 @@ test('Case 2: Backend is sleeping -> retries safely without crashing and maintai
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    // Simulate network error (connection refused / sleeping container)
+    // Simulate network error (sleeping container / cold-start gateway)
     throw new Error('ECONNREFUSED: Connection refused');
   };
 
   const coordinator = new PollingCoordinator({ probeFn, retryIntervalMs: 10 });
   coordinator.start();
 
-  // Wait for 3 retries
   await new Promise((r) => setTimeout(r, 55));
   coordinator.stop();
 
@@ -145,14 +176,18 @@ test('Case 2: Backend is sleeping -> retries safely without crashing and maintai
   assert.ok(callCount >= 2);
 });
 
-test('Case 3: Health check returns HTTP 503 Service Unavailable -> treated as transient and retries', async () => {
+test('Case 3: Startup readiness returns HTTP 503 Service Unavailable -> treated as transient and retries', async () => {
   let callCount = 0;
   const probeFn = async () => {
     callCount++;
-    // HTTP 503 from Blitz waking container
-    return evaluateHealthResponse({
+    // HTTP 503 from backend while DB connection is not ready yet
+    return evaluateStartupResponse({
       status: 503,
-      data: { error: 'Service Unavailable' },
+      data: {
+        success: false,
+        message: 'Backend service or database dependency is not ready.',
+        data: null,
+      },
     });
   };
 
@@ -166,7 +201,7 @@ test('Case 3: Health check returns HTTP 503 Service Unavailable -> treated as tr
   assert.ok(coordinator.retryCount >= 2);
 });
 
-test('Case 4: Health request times out -> recovers by retrying without creating overlapping requests', async () => {
+test('Case 4: Startup request times out -> recovers by retrying without creating overlapping requests', async () => {
   let inFlightNow = 0;
   let maxConcurrent = 0;
   let callCount = 0;
@@ -179,7 +214,7 @@ test('Case 4: Health request times out -> recovers by retrying without creating 
     // Simulate 30ms timeout delay
     await new Promise((r) => setTimeout(r, 30));
     inFlightNow--;
-    throw new Error('timeout of 7000ms exceeded');
+    throw new Error('timeout of 10000ms exceeded');
   };
 
   const coordinator = new PollingCoordinator({ probeFn, retryIntervalMs: 10 });
@@ -202,13 +237,19 @@ test('Case 5: Backend becomes ready after several retries -> transitions to read
   const probeFn = async () => {
     attempts++;
     if (attempts < 3) {
-      // First two attempts fail with 503 (waking up)
-      return evaluateHealthResponse({ status: 503 });
+      // First two attempts fail with 503 (database waking)
+      return evaluateStartupResponse({
+        status: 503,
+        data: { success: false, message: 'Database dependency not ready' },
+      });
     }
     // Third attempt succeeds
-    return evaluateHealthResponse({
+    return evaluateStartupResponse({
       status: 200,
-      data: { status: 'Healthy', database: 'Connected' },
+      data: {
+        success: true,
+        data: { status: 'Ready', database: 'Ready' },
+      },
     });
   };
 
@@ -226,7 +267,7 @@ test('Case 5: Backend becomes ready after several retries -> transitions to read
   coordinator.stop();
 });
 
-test('Case 6: Backend remains unavailable -> shows prolonged-startup state and allows immediate manual retry', async () => {
+test('Case 6: Backend remains unavailable -> shows prolonged-startup state, backs off retry rate, and allows immediate manual retry', async () => {
   let attempts = 0;
   const probeFn = async () => {
     attempts++;
@@ -236,7 +277,8 @@ test('Case 6: Backend remains unavailable -> shows prolonged-startup state and a
   // Set prolonged threshold to 40ms for fast test verification
   const coordinator = new PollingCoordinator({
     probeFn,
-    retryIntervalMs: 100, // Long retry interval
+    retryIntervalMs: 10,
+    prolongedRetryIntervalMs: 200, // Backs off retry rate after prolonged threshold
     prolongedThresholdMs: 40,
   });
 
@@ -282,16 +324,19 @@ test('Case 7: Strict non-overlapping enforcement under concurrent triggers', asy
   await new Promise((r) => setTimeout(r, 80));
   coordinator.stop();
 
-  assert.equal(maxObserved, 1, 'Never allow overlapping health-check requests');
+  assert.equal(maxObserved, 1, 'Never allow overlapping startup-check requests');
 });
 
 test('Case 8: Re-render and navigation isolation -> once ready, no additional polling occurs', async () => {
   let probeCount = 0;
   const probeFn = async () => {
     probeCount++;
-    return evaluateHealthResponse({
+    return evaluateStartupResponse({
       status: 200,
-      data: { status: 'Healthy', database: 'Connected' },
+      data: {
+        success: true,
+        data: { status: 'Ready', database: 'Ready' },
+      },
     });
   };
 
