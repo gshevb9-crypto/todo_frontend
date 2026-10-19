@@ -542,10 +542,14 @@ export default function NotesPage() {
 
   return (
     <div className={`app-container ${sidebarOpen ? 'sidebar-open' : ''}`} data-theme={theme}>
-      {/* ── Mobile Sidebar Backdrop Overlay ──────────────────────── */}
+      {/* ── Mobile Sidebar Backdrop Overlay (Active strictly on mobile screens < 1024px) ── */}
       <div
         className={`sidebar-backdrop ${sidebarOpen ? 'visible' : ''}`}
-        onClick={() => setSidebarOpen(false)}
+        onClick={() => {
+          if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+            setSidebarOpen(false);
+          }
+        }}
         aria-hidden="true"
       />
 
