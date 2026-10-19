@@ -7,10 +7,20 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node --test test/readiness.test.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@tiptap/extension-image": "^3.32.0",
+    "@tiptap/extension-placeholder": "^3.32.0",
+    "@tiptap/extension-underline": "^3.32.0",
+    "@tiptap/pm": "^3.32.0",
+    "@tiptap/react": "^3.32.0",
+    "@tiptap/starter-kit": "^3.32.0",
+    "@types/dompurify": "^3.0.5",
+    "@types/marked": "^5.0.2",
     "axios": "^1.7.5",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.1"
