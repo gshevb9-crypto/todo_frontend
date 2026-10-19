@@ -15,7 +15,7 @@ export function normalizeContentToHtml(rawContent: string | null | undefined): s
   const trimmed = rawContent.trim();
 
   // Check if content already contains HTML block tags
-  const hasHtmlBlockTag = /<\s*(p|h[1-6]|ul|ol|li|blockquote|pre|table|div|article|section)[^>]*>/i.test(trimmed);
+  const hasHtmlBlockTag = /<\s*(p|h[1-6]|ul|ol|li|blockquote|pre|table|div|article|section|hr)[^>]*>/i.test(trimmed);
 
   let htmlResult: string;
 
@@ -33,8 +33,8 @@ export function normalizeContentToHtml(rawContent: string | null | undefined): s
   // Sanitize HTML in browser environments
   if (typeof window !== 'undefined' && DOMPurify && typeof DOMPurify.sanitize === 'function') {
     return DOMPurify.sanitize(htmlResult, {
-      ADD_TAGS: ['iframe'],
-      ADD_ATTR: ['target', 'rel'],
+      ADD_TAGS: ['iframe', 'input', 'hr'],
+      ADD_ATTR: ['target', 'rel', 'data-type', 'data-checked', 'checked', 'type', 'disabled', 'class', 'style'],
     });
   }
 

@@ -4,6 +4,9 @@ import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import Placeholder from '@tiptap/extension-placeholder';
 import Image from '@tiptap/extension-image';
+import TaskList from '@tiptap/extension-task-list';
+import TaskItem from '@tiptap/extension-task-item';
+import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import { normalizeContentToHtml } from '../utils/contentUtils';
 
 export interface RichTextEditorRef {
@@ -28,6 +31,14 @@ interface RichTextEditorProps {
   editable?: boolean;
 }
 
+interface SlashCommandItem {
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+  action: (editor: any) => void;
+}
+
 export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
   (
     {
@@ -36,7 +47,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
       onSave,
       onUploadImage,
       attachedImages = [],
-      placeholder = 'Type something, or use the formatting tools above...',
+      placeholder = "Type '/' for commands, or start writing...",
       editable = true,
     },
     ref
@@ -46,12 +57,125 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
     const [isUploadingImage, setIsUploadingImage] = useState(false);
     const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
+    // Slash command state
+    const [slashOpen, setSlashOpen] = useState(false);
+    const [slashQuery, setSlashQuery] = useState('');
+    const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+    const [slashPos, setSlashPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+    const slashRangeRef = useRef<{ from: number; to: number } | null>(null);
+
+    // Selection bubble menu state
+    const [bubblePos, setBubblePos] = useState<{ top: number; left: number } | null>(null);
+
     const overflowMenuRef = useRef<HTMLDivElement>(null);
     const overflowButtonRef = useRef<HTMLButtonElement>(null);
     const imageMenuRef = useRef<HTMLDivElement>(null);
     const imageButtonRef = useRef<HTMLButtonElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const slashMenuRef = useRef<HTMLDivElement>(null);
     const savedSelectionRef = useRef<{ from: number; to: number } | null>(null);
+
+    // Define Slash Commands List
+    const slashCommands: SlashCommandItem[] = [
+      {
+        id: 'text',
+        title: 'Text',
+        description: 'Just start writing with plain text.',
+        icon: '📝',
+        action: (ed) => ed.chain().focus().setParagraph().run(),
+      },
+      {
+        id: 'todo',
+        title: 'To-do list',
+        description: 'Track tasks with a to-do list checkbox.',
+        icon: '☑️',
+        action: (ed) => ed.chain().focus().toggleTaskList().run(),
+      },
+      {
+        id: 'h1',
+        title: 'Heading 1',
+        description: 'Large section heading.',
+        icon: 'H1',
+        action: (ed) => ed.chain().focus().toggleHeading({ level: 1 }).run(),
+      },
+      {
+        id: 'h2',
+        title: 'Heading 2',
+        description: 'Medium section heading.',
+        icon: 'H2',
+        action: (ed) => ed.chain().focus().toggleHeading({ level: 2 }).run(),
+      },
+      {
+        id: 'h3',
+        title: 'Heading 3',
+        description: 'Small section heading.',
+        icon: 'H3',
+        action: (ed) => ed.chain().focus().toggleHeading({ level: 3 }).run(),
+      },
+      {
+        id: 'bullet',
+        title: 'Bulleted list',
+        description: 'Create a simple bulleted list.',
+        icon: '•',
+        action: (ed) => ed.chain().focus().toggleBulletList().run(),
+      },
+      {
+        id: 'number',
+        title: 'Numbered list',
+        description: 'Create a list with numbering.',
+        icon: '1.',
+        action: (ed) => ed.chain().focus().toggleOrderedList().run(),
+      },
+      {
+        id: 'quote',
+        title: 'Quote',
+        description: 'Capture a quote or blockquote.',
+        icon: '❝',
+        action: (ed) => ed.chain().focus().toggleBlockquote().run(),
+      },
+      {
+        id: 'callout',
+        title: 'Callout',
+        description: 'Make writing stand out with an icon.',
+        icon: '💡',
+        action: (ed) =>
+          ed
+            .chain()
+            .focus()
+            .insertContent(
+              '<blockquote class="notion-callout"><p>💡 Type important notes or callouts here...</p></blockquote>'
+            )
+            .run(),
+      },
+      {
+        id: 'code',
+        title: 'Code block',
+        description: 'Capture a code snippet.',
+        icon: '💻',
+        action: (ed) => ed.chain().focus().toggleCodeBlock().run(),
+      },
+      {
+        id: 'divider',
+        title: 'Divider',
+        description: 'Visually divide blocks with a line.',
+        icon: '➖',
+        action: (ed) => ed.chain().focus().setHorizontalRule().run(),
+      },
+      {
+        id: 'image',
+        title: 'Image',
+        description: 'Upload an image or pick from gallery.',
+        icon: '🖼️',
+        action: () => handleImageButtonClick(),
+      },
+    ];
+
+    const filteredSlashCommands = slashCommands.filter(
+      (cmd) =>
+        cmd.title.toLowerCase().includes(slashQuery.toLowerCase()) ||
+        cmd.description.toLowerCase().includes(slashQuery.toLowerCase()) ||
+        cmd.id.toLowerCase().includes(slashQuery.toLowerCase())
+    );
 
     const editor = useEditor({
       extensions: [
@@ -59,6 +183,12 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
           heading: {
             levels: [1, 2, 3],
           },
+          horizontalRule: false,
+        }),
+        HorizontalRule,
+        TaskList,
+        TaskItem.configure({
+          nested: true,
         }),
         Underline,
         Placeholder.configure({
@@ -82,6 +212,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
           'aria-label': 'Note Content Editor',
         },
         handleKeyDown: (_view, event) => {
+          // Ctrl+S / Cmd+S save shortcut
           if ((event.ctrlKey || event.metaKey) && event.key === 's') {
             event.preventDefault();
             if (onSave) {
@@ -89,14 +220,146 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
             }
             return true;
           }
+
+          // Handle Slash Menu Navigation
+          if (slashOpen) {
+            if (event.key === 'ArrowDown') {
+              event.preventDefault();
+              setSlashSelectedIndex((prev) =>
+                filteredSlashCommands.length > 0 ? (prev + 1) % filteredSlashCommands.length : 0
+              );
+              return true;
+            }
+            if (event.key === 'ArrowUp') {
+              event.preventDefault();
+              setSlashSelectedIndex((prev) =>
+                filteredSlashCommands.length > 0
+                  ? (prev - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
+                  : 0
+              );
+              return true;
+            }
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              const chosen = filteredSlashCommands[slashSelectedIndex];
+              if (chosen) {
+                executeSlashCommand(chosen);
+              }
+              return true;
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              setSlashOpen(false);
+              return true;
+            }
+          }
+
           return false;
         },
       },
       onUpdate: ({ editor: currentEditor }) => {
         const html = currentEditor.getHTML();
         onChange(html);
+
+        // Check for Slash Command trigger in current text
+        checkSlashCommand(currentEditor);
+      },
+      onSelectionUpdate: ({ editor: currentEditor }) => {
+        updateBubbleMenu(currentEditor);
+        checkSlashCommand(currentEditor);
       },
     });
+
+    // Detect if slash was typed at cursor
+    const checkSlashCommand = (currentEditor: any) => {
+      if (!currentEditor) return;
+      const { state } = currentEditor;
+      const { selection } = state;
+      const { $from } = selection;
+
+      // Only single cursor (no range selection)
+      if (!selection.empty) {
+        setSlashOpen(false);
+        return;
+      }
+
+      // Get text before cursor in current line
+      const textBefore = $from.parent.textBetween(0, $from.parentOffset, undefined, '\ufffc');
+      const slashIndex = textBefore.lastIndexOf('/');
+
+      if (slashIndex !== -1 && (slashIndex === 0 || textBefore[slashIndex - 1] === ' ')) {
+        const query = textBefore.slice(slashIndex + 1);
+        // Only trigger if no spaces in query
+        if (!query.includes(' ')) {
+          const from = $from.pos - query.length - 1;
+          const to = $from.pos;
+          slashRangeRef.current = { from, to };
+          setSlashQuery(query);
+          setSlashSelectedIndex(0);
+
+          try {
+            const coords = currentEditor.view.coordsAtPos(from);
+            setSlashPos({
+              top: coords.bottom + 6,
+              left: Math.min(coords.left, window.innerWidth - 320),
+            });
+            setSlashOpen(true);
+            return;
+          } catch {
+            // Ignore if coordinates calculation fails
+          }
+        }
+      }
+
+      setSlashOpen(false);
+    };
+
+    const executeSlashCommand = (cmd: SlashCommandItem) => {
+      if (!editor) return;
+
+      if (slashRangeRef.current) {
+        // Delete the "/query" text from document
+        editor.chain().focus().deleteRange(slashRangeRef.current).run();
+      }
+
+      setSlashOpen(false);
+      cmd.action(editor);
+    };
+
+    // Update Floating Bubble Menu
+    const updateBubbleMenu = (currentEditor: any) => {
+      if (!currentEditor || !currentEditor.isFocused) {
+        setBubblePos(null);
+        return;
+      }
+
+      const { state } = currentEditor;
+      const { selection } = state;
+
+      if (selection.empty || selection.from === selection.to) {
+        setBubblePos(null);
+        return;
+      }
+
+      try {
+        const domSelection = window.getSelection();
+        if (domSelection && domSelection.rangeCount > 0) {
+          const range = domSelection.getRangeAt(0);
+          const rect = range.getBoundingClientRect();
+          if (rect && rect.width > 0) {
+            setBubblePos({
+              top: Math.max(10, rect.top - 46),
+              left: Math.max(10, Math.min(rect.left + rect.width / 2 - 140, window.innerWidth - 300)),
+            });
+            return;
+          }
+        }
+      } catch {
+        // Ignore selection rect calculation error
+      }
+
+      setBubblePos(null);
+    };
 
     // Expose imperative methods to parent
     useImperativeHandle(
@@ -154,12 +417,22 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
         ) {
           setImageMenuOpen(false);
         }
+
+        if (
+          slashOpen &&
+          slashMenuRef.current &&
+          !slashMenuRef.current.contains(target)
+        ) {
+          setSlashOpen(false);
+        }
       };
 
       const handleKeyDown = (event: KeyboardEvent) => {
         if (event.key === 'Escape') {
           setOverflowOpen(false);
           setImageMenuOpen(false);
+          setSlashOpen(false);
+          setBubblePos(null);
           setPreviewImageUrl(null);
           editor?.commands.focus();
         }
@@ -172,7 +445,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
         document.removeEventListener('pointerdown', handlePointerDownOutside);
         document.removeEventListener('keydown', handleKeyDown);
       };
-    }, [overflowOpen, imageMenuOpen, editor]);
+    }, [overflowOpen, imageMenuOpen, slashOpen, editor]);
 
     // Click handler for images inside editor to preview full-screen
     const handleEditorContainerClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -223,7 +496,6 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
     // Direct Image Upload Trigger
     const handleImageButtonClick = () => {
       if (!onUploadImage) {
-        // Fallback: prompt for image URL
         const url = window.prompt('Enter image URL:');
         if (url && editor) {
           editor.chain().focus().setImage({ src: url }).run();
@@ -232,10 +504,8 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
       }
 
       if (attachedImages.length > 0) {
-        // Show options menu: Upload new or pick from existing
         setImageMenuOpen((prev) => !prev);
       } else {
-        // Directly trigger file picker
         fileInputRef.current?.click();
       }
     };
@@ -271,7 +541,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
     if (!editor) {
       return (
         <div className="editor-loading-placeholder">
-          <span>Preparing rich text editor...</span>
+          <span>Preparing Notion editor...</span>
         </div>
       );
     }
@@ -287,7 +557,112 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
           onChange={handleFileInputChange}
         />
 
-        {/* ── Notion-Style Touch-Friendly Formatting Toolbar Ribbon ─────────────────── */}
+        {/* ── Notion-Style Floating Bubble Menu (Shown on text highlight) ──────── */}
+        {bubblePos && (
+          <div
+            className="notion-bubble-menu"
+            style={{ top: `${bubblePos.top}px`, left: `${bubblePos.left}px` }}
+            onMouseDown={handlePreventFocusLoss}
+          >
+            <button
+              type="button"
+              className={`notion-bubble-btn ${editor.isActive('bold') ? 'active' : ''}`}
+              title="Bold"
+              onClick={() => editor.chain().focus().toggleBold().run()}
+            >
+              <strong>B</strong>
+            </button>
+            <button
+              type="button"
+              className={`notion-bubble-btn ${editor.isActive('italic') ? 'active' : ''}`}
+              title="Italic"
+              onClick={() => editor.chain().focus().toggleItalic().run()}
+            >
+              <em>I</em>
+            </button>
+            <button
+              type="button"
+              className={`notion-bubble-btn ${editor.isActive('underline') ? 'active' : ''}`}
+              title="Underline"
+              onClick={() => editor.chain().focus().toggleUnderline().run()}
+            >
+              <u>U</u>
+            </button>
+            <button
+              type="button"
+              className={`notion-bubble-btn ${editor.isActive('strike') ? 'active' : ''}`}
+              title="Strikethrough"
+              onClick={() => editor.chain().focus().toggleStrike().run()}
+            >
+              <s>S</s>
+            </button>
+            <button
+              type="button"
+              className={`notion-bubble-btn ${editor.isActive('code') ? 'active' : ''}`}
+              title="Inline Code"
+              onClick={() => editor.chain().focus().toggleCode().run()}
+            >
+              &lt;&gt;
+            </button>
+            <div className="toolbar-divider" />
+            <button
+              type="button"
+              className={`notion-bubble-btn ${editor.isActive('heading', { level: 1 }) ? 'active' : ''}`}
+              title="Heading 1"
+              onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+            >
+              H1
+            </button>
+            <button
+              type="button"
+              className={`notion-bubble-btn ${editor.isActive('heading', { level: 2 }) ? 'active' : ''}`}
+              title="Heading 2"
+              onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+            >
+              H2
+            </button>
+            <button
+              type="button"
+              className={`notion-bubble-btn ${editor.isActive('taskList') ? 'active' : ''}`}
+              title="To-do list"
+              onClick={() => editor.chain().focus().toggleTaskList().run()}
+            >
+              ☑️
+            </button>
+          </div>
+        )}
+
+        {/* ── Notion Slash Command Popover Menu ─────────────────────── */}
+        {slashOpen && (
+          <div
+            ref={slashMenuRef}
+            className="slash-menu-popup"
+            style={{ top: `${slashPos.top}px`, left: `${slashPos.left}px` }}
+            onMouseDown={handlePreventFocusLoss}
+          >
+            <div className="slash-menu-header">Basic blocks</div>
+            {filteredSlashCommands.length === 0 ? (
+              <div className="slash-menu-empty">No matching commands for "{slashQuery}"</div>
+            ) : (
+              filteredSlashCommands.map((cmd, idx) => (
+                <div
+                  key={cmd.id}
+                  className={`slash-menu-item ${idx === slashSelectedIndex ? 'selected' : ''}`}
+                  onClick={() => executeSlashCommand(cmd)}
+                  onMouseEnter={() => setSlashSelectedIndex(idx)}
+                >
+                  <div className="slash-menu-icon">{cmd.icon}</div>
+                  <div className="slash-menu-text">
+                    <span className="slash-menu-title">{cmd.title}</span>
+                    <span className="slash-menu-desc">{cmd.description}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* ── Desktop & Touch-Friendly Formatting Toolbar Ribbon ─────────────────── */}
         <div className="toolbar" role="toolbar" aria-label="Text formatting toolbar">
           {/* History Controls */}
           <div className="toolbar-group">
@@ -317,7 +692,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
 
           <div className="toolbar-divider" />
 
-          {/* Block Formatting: Paragraph & Headings */}
+          {/* Block Formatting: Paragraph, Checkbox, Headings */}
           <div className="toolbar-group">
             <button
               type="button"
@@ -328,6 +703,16 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
               onClick={() => runFormattingAction(() => editor.chain().focus().setParagraph().run())}
             >
               ¶
+            </button>
+            <button
+              type="button"
+              className={`toolbar-btn ${editor.isActive('taskList') ? 'active' : ''}`}
+              title="To-do Checkbox List"
+              aria-label="To-do list"
+              onMouseDown={handlePreventFocusLoss}
+              onClick={() => runFormattingAction(() => editor.chain().focus().toggleTaskList().run())}
+            >
+              ☑️ Todo
             </button>
             <button
               type="button"
@@ -419,7 +804,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
 
           <div className="toolbar-divider" />
 
-          {/* Lists & Blocks: Bullet, Numbered, Quote, Code Block */}
+          {/* Lists & Blocks: Bullet, Numbered, Quote, Callout, Divider */}
           <div className="toolbar-group">
             <button
               type="button"
@@ -453,13 +838,33 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
             </button>
             <button
               type="button"
-              className={`toolbar-btn ${editor.isActive('codeBlock') ? 'active' : ''}`}
-              title="Code Block"
-              aria-label="Code block"
+              className="toolbar-btn"
+              title="Callout Box"
+              aria-label="Callout box"
               onMouseDown={handlePreventFocusLoss}
-              onClick={() => runFormattingAction(() => editor.chain().focus().toggleCodeBlock().run())}
+              onClick={() =>
+                runFormattingAction(() =>
+                  editor
+                    .chain()
+                    .focus()
+                    .insertContent(
+                      '<blockquote class="notion-callout"><p>💡 Type your callout note here...</p></blockquote>'
+                    )
+                    .run()
+                )
+              }
             >
-              {`{ }`}
+              💡 Callout
+            </button>
+            <button
+              type="button"
+              className="toolbar-btn"
+              title="Divider (Line)"
+              aria-label="Divider"
+              onMouseDown={handlePreventFocusLoss}
+              onClick={() => runFormattingAction(() => editor.chain().focus().setHorizontalRule().run())}
+            >
+              ➖ Line
             </button>
           </div>
 
@@ -484,7 +889,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
               )}
             </button>
 
-            {/* Image Source Dropdown (if tab already has attached photos) */}
+            {/* Image Source Dropdown */}
             {imageMenuOpen && (
               <div
                 ref={imageMenuRef}
@@ -506,7 +911,7 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
                 {attachedImages.length > 0 && (
                   <>
                     <div className="dropdown-divider" />
-                    <div className="dropdown-section-title">Notebook Gallery ({attachedImages.length})</div>
+                    <div className="dropdown-section-title">Gallery Photos ({attachedImages.length})</div>
                     <div className="toolbar-image-grid-preview">
                       {attachedImages.map((img) => (
                         <div
@@ -548,255 +953,213 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
               type="button"
               className={`toolbar-btn toolbar-overflow-trigger ${overflowOpen ? 'active' : ''}`}
               title="More formatting options"
-              aria-label="More formatting options"
-              aria-haspopup="true"
-              aria-expanded={overflowOpen}
+              aria-label="More options"
               onMouseDown={handlePreventFocusLoss}
               onClick={toggleOverflowMenu}
             >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <circle cx="12" cy="12" r="1.5" />
-                <circle cx="12" cy="5" r="1.5" />
-                <circle cx="12" cy="19" r="1.5" />
-              </svg>
+              ⋯
             </button>
 
-            {/* Overflow Dropdown Menu */}
             {overflowOpen && (
               <div
                 ref={overflowMenuRef}
                 className="toolbar-overflow-menu"
-                role="menu"
-                aria-label="Extended formatting options"
                 onMouseDown={handlePreventFocusLoss}
               >
-                <div className="overflow-section-label">Headings & Structure</div>
+                <div className="overflow-section-label">Block Type</div>
                 <div className="overflow-grid">
                   <button
                     type="button"
-                    role="menuitem"
                     className={`overflow-menu-item ${editor.isActive('paragraph') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
                     onClick={() => runFormattingAction(() => editor.chain().focus().setParagraph().run(), true)}
                   >
                     <span className="overflow-item-icon">¶</span>
-                    <span>Normal Text</span>
+                    <span>Text</span>
                   </button>
-
                   <button
                     type="button"
-                    role="menuitem"
+                    className={`overflow-menu-item ${editor.isActive('taskList') ? 'active' : ''}`}
+                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleTaskList().run(), true)}
+                  >
+                    <span className="overflow-item-icon">☑️</span>
+                    <span>To-do</span>
+                  </button>
+                  <button
+                    type="button"
                     className={`overflow-menu-item ${editor.isActive('heading', { level: 1 }) ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
                     onClick={() => runFormattingAction(() => editor.chain().focus().toggleHeading({ level: 1 }).run(), true)}
                   >
                     <span className="overflow-item-icon">H1</span>
                     <span>Heading 1</span>
                   </button>
-
                   <button
                     type="button"
-                    role="menuitem"
                     className={`overflow-menu-item ${editor.isActive('heading', { level: 2 }) ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
                     onClick={() => runFormattingAction(() => editor.chain().focus().toggleHeading({ level: 2 }).run(), true)}
                   >
                     <span className="overflow-item-icon">H2</span>
                     <span>Heading 2</span>
                   </button>
-
                   <button
                     type="button"
-                    role="menuitem"
-                    className={`overflow-menu-item ${editor.isActive('heading', { level: 3 }) ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
-                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleHeading({ level: 3 }).run(), true)}
-                  >
-                    <span className="overflow-item-icon">H3</span>
-                    <span>Heading 3</span>
-                  </button>
-                </div>
-
-                <div className="overflow-menu-divider" />
-
-                <div className="overflow-section-label">Inline Styles</div>
-                <div className="overflow-grid">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={`overflow-menu-item ${editor.isActive('bold') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
-                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleBold().run(), true)}
-                  >
-                    <span className="overflow-item-icon"><strong>B</strong></span>
-                    <span>Bold</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={`overflow-menu-item ${editor.isActive('italic') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
-                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleItalic().run(), true)}
-                  >
-                    <span className="overflow-item-icon"><em>I</em></span>
-                    <span>Italic</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={`overflow-menu-item ${editor.isActive('underline') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
-                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleUnderline().run(), true)}
-                  >
-                    <span className="overflow-item-icon"><span style={{ textDecoration: 'underline' }}>U</span></span>
-                    <span>Underline</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={`overflow-menu-item ${editor.isActive('strike') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
-                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleStrike().run(), true)}
-                  >
-                    <span className="overflow-item-icon"><span style={{ textDecoration: 'line-through' }}>S</span></span>
-                    <span>Strikethrough</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={`overflow-menu-item ${editor.isActive('code') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
-                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleCode().run(), true)}
-                  >
-                    <span className="overflow-item-icon">&lt;&gt;</span>
-                    <span>Inline Code</span>
-                  </button>
-                </div>
-
-                <div className="overflow-menu-divider" />
-
-                <div className="overflow-section-label">Lists & Blocks</div>
-                <div className="overflow-grid">
-                  <button
-                    type="button"
-                    role="menuitem"
                     className={`overflow-menu-item ${editor.isActive('bulletList') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
                     onClick={() => runFormattingAction(() => editor.chain().focus().toggleBulletList().run(), true)}
                   >
                     <span className="overflow-item-icon">•</span>
-                    <span>Bullet List</span>
+                    <span>Bullet list</span>
                   </button>
-
                   <button
                     type="button"
-                    role="menuitem"
                     className={`overflow-menu-item ${editor.isActive('orderedList') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
                     onClick={() => runFormattingAction(() => editor.chain().focus().toggleOrderedList().run(), true)}
                   >
                     <span className="overflow-item-icon">1.</span>
-                    <span>Numbered List</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={`overflow-menu-item ${editor.isActive('blockquote') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
-                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleBlockquote().run(), true)}
-                  >
-                    <span className="overflow-item-icon">“</span>
-                    <span>Blockquote</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={`overflow-menu-item ${editor.isActive('codeBlock') ? 'active' : ''}`}
-                    onMouseDown={handlePreventFocusLoss}
-                    onClick={() => runFormattingAction(() => editor.chain().focus().toggleCodeBlock().run(), true)}
-                  >
-                    <span className="overflow-item-icon">{`{ }`}</span>
-                    <span>Code Block</span>
+                    <span>Number list</span>
                   </button>
                 </div>
-
-                <div className="overflow-menu-divider" />
-
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="overflow-menu-item clear-action"
-                  onMouseDown={handlePreventFocusLoss}
-                  onClick={() => runFormattingAction(() => editor.chain().focus().unsetAllMarks().clearNodes().run(), true)}
-                >
-                  <span className="overflow-item-icon">🧹</span>
-                  <span>Clear Formatting</span>
-                </button>
               </div>
             )}
           </div>
         </div>
 
-        {/* ── ProseMirror Editor Viewport ─────────────────────────────────── */}
-        <div
-          className="editor-viewport"
-          onClick={handleEditorContainerClick}
-        >
+        {/* ── Document Viewport ─────────────────────────────────── */}
+        <div className="editor-viewport" onClick={handleEditorContainerClick}>
           <EditorContent editor={editor} />
         </div>
 
-        {/* ── Image Lightbox Fullscreen Preview Modal ──────────────────────── */}
+        {/* ── Mobile Touch Accessory Bar (Fixed bottom for iPhone/Android) ─────── */}
+        <div className="notion-mobile-toolbar" onMouseDown={handlePreventFocusLoss}>
+          <button
+            type="button"
+            className={`notion-mobile-btn ${editor.isActive('taskList') ? 'active' : ''}`}
+            onClick={() => editor.chain().focus().toggleTaskList().run()}
+            title="Checklist"
+          >
+            ☑️
+          </button>
+          <button
+            type="button"
+            className={`notion-mobile-btn ${editor.isActive('bulletList') ? 'active' : ''}`}
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+            title="Bullet list"
+          >
+            • List
+          </button>
+          <button
+            type="button"
+            className={`notion-mobile-btn ${editor.isActive('heading', { level: 1 }) ? 'active' : ''}`}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+            title="H1"
+          >
+            H1
+          </button>
+          <button
+            type="button"
+            className={`notion-mobile-btn ${editor.isActive('heading', { level: 2 }) ? 'active' : ''}`}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+            title="H2"
+          >
+            H2
+          </button>
+          <button
+            type="button"
+            className={`notion-mobile-btn ${editor.isActive('bold') ? 'active' : ''}`}
+            onClick={() => editor.chain().focus().toggleBold().run()}
+            title="Bold"
+          >
+            <strong>B</strong>
+          </button>
+          <button
+            type="button"
+            className={`notion-mobile-btn ${editor.isActive('italic') ? 'active' : ''}`}
+            onClick={() => editor.chain().focus().toggleItalic().run()}
+            title="Italic"
+          >
+            <em>I</em>
+          </button>
+          <button
+            type="button"
+            className="notion-mobile-btn"
+            onClick={handleImageButtonClick}
+            title="Image"
+          >
+            🖼️
+          </button>
+          <button
+            type="button"
+            className="notion-mobile-btn"
+            onClick={() =>
+              editor
+                .chain()
+                .focus()
+                .insertContent(
+                  '<blockquote class="notion-callout"><p>💡 Note...</p></blockquote>'
+                )
+                .run()
+            }
+            title="Callout"
+          >
+            💡
+          </button>
+          <button
+            type="button"
+            className="notion-mobile-btn"
+            onClick={() => editor.chain().focus().undo().run()}
+            disabled={!editor.can().undo()}
+            title="Undo"
+          >
+            ↩
+          </button>
+          <button
+            type="button"
+            className="notion-mobile-btn"
+            onClick={() => editor.chain().focus().redo().run()}
+            disabled={!editor.can().redo()}
+            title="Redo"
+          >
+            ↪
+          </button>
+        </div>
+
+        {/* ── Image Fullscreen Lightbox Preview Modal ──────────────────────── */}
         {previewImageUrl && (
           <div
             className="image-lightbox-overlay"
             onClick={() => setPreviewImageUrl(null)}
             role="dialog"
-            aria-label="Image preview"
+            aria-modal="true"
+            aria-label="Image Preview Lightbox"
           >
             <button
               type="button"
               className="image-lightbox-close"
               onClick={() => setPreviewImageUrl(null)}
               aria-label="Close image preview"
+              title="Close (Esc)"
             >
               ✕
             </button>
-            <div
-              className="image-lightbox-content"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <img src={previewImageUrl} alt="Enlarged note attachment" />
+            <div className="image-lightbox-content" onClick={(e) => e.stopPropagation()}>
+              <img src={previewImageUrl} alt="Full screen preview" />
               <div className="image-lightbox-actions">
                 <a
                   href={previewImageUrl}
                   target="_blank"
-                  rel="noopener noreferrer"
+                  rel="noreferrer"
                   className="btn-lightbox-action"
+                  download
                 >
-                  Open Original
+                  Download Image
                 </a>
                 <button
                   type="button"
                   className="btn-lightbox-action"
-                  onClick={() => setPreviewImageUrl(null)}
+                  onClick={() => {
+                    navigator.clipboard.writeText(previewImageUrl);
+                    alert('Image URL copied to clipboard!');
+                  }}
                 >
-                  Close
+                  Copy URL
                 </button>
               </div>
             </div>
@@ -806,4 +1169,5 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
     );
   }
 );
+
 RichTextEditor.displayName = 'RichTextEditor';
